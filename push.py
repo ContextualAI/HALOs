@@ -30,7 +30,6 @@ if __name__ == "__main__":
 
     tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.model.name_or_path
     print(f'Loading tokenizer {tokenizer_name_or_path}')
-    tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.model.name_or_path
     tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_name_or_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -56,3 +55,5 @@ if __name__ == "__main__":
         print('model loaded successfully')
     except:
         print(f'model failed to load from hub {repo}')
+
+    print(f'model pushed successfully: https://huggingface.co/ContextualAI/{exp_name}')

@@ -66,10 +66,27 @@ What should we do?
     ```
 
 7. Now we can start training a model! Let's train a Llama-7B model on the SHP, Anthropic HH, and Open Assistant datasets.
-   Since the corresponding entry for Llama-7B is config/model/llama7b.yaml, we run
+   Since the corresponding entry for Llama-7B is config/model/llama7b.yaml, we run a command with [Hydra](https://hydra.cc/docs/intro/):
 
    `python train.py loss=kto model=llama7b datasets=[shp,hh,oasst] exp_name=kto_llama7b mode=train ++cache_dir=/data/models`
 
    which will align a Llama-7B model from scratch. If we want to align a model that we've already finetuned with the HALOs repo,
    we can add `++model.load_from=/data/models/sft_llama7b/LATEST/policy.pt` to the end of the command.
+
+   That's it! Your model will be saved at /data/models/kto_llama7b//LATEST/policy.pt.
+
+
+## FAQs
+
+1. Do you support multi-node training?
+
+   No, currently the repo only supports single-node training. Multi-node training will be added at some point in the future.
+   Every model in the Archangel suite was trained with 8 x A100 GPUs on a single node.
+
+2. How do I save intermediate checkpoints?
+
+   Set intermediate_checkpoints to true in config/config.yaml or on the command line with ++config.intermediate_checkpoints=true.
+   Every config.eval_every steps, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
+   
+   
    

@@ -22,8 +22,9 @@ What should we do?
    This means we can use dataloader.UnpairedPreferenceDataLoader. If you wanted a custom dataloader, you would implement it in the same Python file by extending the base DataLoader class.
 
 4. Write a trainer in trainers.py. This should subclass either UnpairedPreferenceTrainer or PairedPreferenceTrainer depending on whether it uses pairs of preferences or not.
-   If you need custom behavior that is not in either of the two, then you can subclass BasicTrainer directly. KTO is simple to implement: we just subclass UnpairedPreferenceTrainer
-   and overwrite the loss function definition:
+   If you need highly custom behavior that is not in either, then you can subclass BasicTrainer directly.
+
+   KTO is simple to implement: we just subclass trainers.UnpairedPreferenceTrainer as trainers.KTOTrainer and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
 
    ```python
    class KTOTrainer(UnpairedPreferenceTrainer):
@@ -54,3 +55,21 @@ What should we do?
       return losses, chosen_rewards, rejected_rewards
    ```
 
+6. Add a file to the config/loss folder specifying the details of the loss:
+
+   ```yaml
+    name: kto
+    beta: 0.1 # the temperature parameter for KTO; lower values mean we care less about the reference model
+    trainer: KTOTrainer # implemented in trainers.py
+    dataloader: UnpairedPreferenceDataLoader # already exists in dataloaders.py
+    use_reference_model: true # true because the loss definitions includes a reference model
+    ```
+
+7. Now we can start training a model! Let's train a Llama-7B model on the SHP, Anthropic HH, and Open Assistant datasets.
+   Since the corresponding entry for Llama-7B is config/model/llama7b.yaml, we run
+
+   `python train.py loss=kto model=llama7b datasets=[shp,hh,oasst] exp_name=kto_llama7b mode=train ++cache_dir=/data/models`
+
+   which will align a Llama-7B model from scratch. If we want to align a model that we've already finetuned with the HALOs repo,
+   we can add `++model.load_from=/data/models/sft_llama7b/LATEST/policy.pt` to the end of the command.
+   

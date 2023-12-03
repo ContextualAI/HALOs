@@ -1,0 +1,11 @@
+# Kahneman-Tversky optimization
+name: kto
+
+# the temperature parameter for KTO; lower values mean we care less about the reference model
+beta: 0.1
+
+trainer: KTOTrainer
+
+dataloader: UnpairedPreferenceDataLoader
+
+use_reference_model: true

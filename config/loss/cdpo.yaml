@@ -1,0 +1,14 @@
+# do cDPO preference-based training
+name: cdpo
+
+# the temperature parameter for cDPO; lower values mean we care less about the reference model
+beta: 0.1
+
+# proportion of preferences with the wrong label
+epsilon: 0.2
+
+trainer: CDPOTrainer
+
+dataloader: PairedPreferenceDataLoader
+
+use_reference_model: true

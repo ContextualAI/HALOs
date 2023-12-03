@@ -1,0 +1,85 @@
+# random seed
+seed: 1
+
+# name for this experiment in the local run directory and on wandb
+exp_name: ???
+
+# datasets should be specified
+datasets: ???
+
+# mode: one of 'train', 'eval', or 'sample'
+mode: ???
+
+# debug mode (disables wandb, model checkpointing, etc.)
+debug: false
+
+# whether to use FSDP
+use_fsdp: true
+
+# the port to use for FSDP
+fsdp_port: null
+
+# wandb configuration
+wandb:
+  enabled: true
+  entity: null
+  project: "archangel"
+
+# where trained models will be saved
+# use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 
+# relevant HF env variables are TRANSFORMERS_CACHE, HF_DATASETS_CACHE, HF_MODULES_CACHE, HF_METRICS_CACHE
+cache_dir: /data/kawin_contextual_ai/.cache/kawin
+
+local_run_dir: ${cache_dir}/${exp_name}
+
+# whether to eval at the very beginning of training
+do_first_eval: true
+
+# prevent wandb from logging more than once per minimum_log_interval_secs
+minimum_log_interval_secs: 1.0
+
+intermediate_checkpoints: false
+
+defaults:
+- _self_
+- model: ???
+- loss: ???
+
+# the trainer class to use (e.g. BasicTrainer, FSDPTrainer, TensorParallelTrainer); should be specfied by the loss config
+trainer: BasicTrainer
+
+
+## TRAINING SETTINGS
+
+# the learning rate
+lr: 5e-7
+
+# the number of epochs to train for; if null, must specify n_examples
+n_epochs: 1
+
+# the number of examples to train for; if null, must specify n_epochs
+n_examples: null
+
+# The optimizer to use; we use RMSprop because it works about as well as Adam and is more memory-efficient
+optimizer: RMSprop
+
+# number of linear warmup steps for the learning rate
+warmup_steps: 150
+
+# evaluate and save model every eval_every steps
+eval_every: 20_000
+
+
+### EVALUATION SETTINGS
+
+# how many model samples to generate during sampling
+n_samples: 128
+
+# the number of examples to evaluate on (leave as null to evaluate on all of them)
+n_eval_examples: 512
+
+# where the aligned policy model is stored
+saved_policy: null
+
+# top p choice for sampling
+top_p: 0.95

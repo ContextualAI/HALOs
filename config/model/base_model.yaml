@@ -1,0 +1,47 @@
+# the name of the model to use; should be something like
+#   gpt2-xl or gpt-neo-2.7B or huggyllama/llama-7b
+name_or_path: ???
+
+# the name of the tokenizer to use; if null, will use the tokenizer from the model
+tokenizer_name_or_path: null
+
+# override pre-trained weights (e.g., from SFT); optional, should be the name of the model (e.g., archangel_sft_pythia-1.4b/LATEST/policy.pt)
+load_from: null
+
+# the name of the module class to wrap with FSDP; should be something like
+#   e.g. GPT2Block, GPTNeoXLayer, LlamaDecoderLayer, etc.
+block_name: null
+
+# the dtype for the policy parameters/optimizer state
+policy_dtype: bfloat16
+
+# the mixed precision dtype if using FSDP; defaults to the same as the policy
+fsdp_policy_mp: null
+
+# the dtype for the reference model (which is used for inference only)
+reference_dtype: bfloat16
+
+# the maximum gradient norm to clip to
+max_grad_norm: 10.0
+
+# gradient norm for clipping gradient of value head (for PPO)
+v_head_max_grad_norm: 0.10
+
+# the maximum allowed length for an input (prompt + response) (usually has to be smaller than what the model supports)
+max_length: 2048
+
+# the maximum allowed length for a prompt (remainder will be dedicated to the completion)
+max_prompt_length: 1024
+
+activation_checkpointing: true
+
+# the total batch size for training; for FSDP, divide by number of devices to get microbatch size
+batch_size: 32
+
+# number of steps to accumulate over for each batch
+gradient_accumulation_steps: 1
+
+# the batch size during evaluation and sampling, if enabled
+eval_batch_size: 16
+
+use_flash_attention: false

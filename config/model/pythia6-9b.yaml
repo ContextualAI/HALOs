@@ -1,0 +1,5 @@
+defaults:
+  - base_model
+
+name_or_path: EleutherAI/pythia-6.9b
+block_name: GPTNeoXLayer

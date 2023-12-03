@@ -1,0 +1,13 @@
+name: slic
+
+# the temperature parameter for SLiC
+beta: 1.0
+
+# lambda value for KL penalty
+lambda_coef: 0.1
+
+trainer: SLiCTrainer
+
+dataloader: PairedPreferenceDataLoader
+
+use_reference_model: false

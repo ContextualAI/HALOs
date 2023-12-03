@@ -1,0 +1,25 @@
+name: ppo
+
+# number of times to iterate over the same PPO batch
+ppo_epochs: 1
+
+# used to clip the probability ratio in range [cliprange, 1/cliprange]
+cliprange: 0.5
+
+trainer: PPOTrainer
+
+dataloader: UnpairedPreferenceDataLoader
+
+# lambda for PPO
+lam: 0.95
+
+# gamma for PPO
+gamma: 0.99
+
+# coefficient on critic loss in PPO; adjusted magnitude of loss should be similar to policy loss
+critic_coef: 0.01
+
+# coefficient on KL penalty
+KL_coef: 0.1
+
+use_reference_model: true

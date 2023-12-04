@@ -3,8 +3,13 @@
 This repo allows you to design new **human-aware loss functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more on our blog)]().
 It was used to create Archangel, the largest-ever suite of human-feedback-aligned LLMs, and has been tested at scales from 1B to 30B.
 
-The HALOs repo is a fork of the excellently written [DPO repo](https://github.com/eric-mitchell/direct-preference-optimization) and has preserved many design choices from the original.
-However, this repo makes loading data and training models more modular and therefore extensible.
+This repo draws from the excellently written [DPO repo](https://github.com/eric-mitchell/direct-preference-optimization) and has preserved many design choices from the original.
+Some of the key changes we introduced are:
+- making data loading more modular, so that you can easily write your own dataloader
+- making trainers more modular, so that each HALO has its own trainer subclass
+- adding code for doing open-ended evaluation with GPT-4 as a judge
+- supporting losses beyond SFT and DPO (including KTO, PPO (offline, off-policy variant), and SLiC)
+
 
 ## Quickstart
 
@@ -18,10 +23,11 @@ What should we do?
    
     `conda activate halos`
 
-3. Determine whether you need a new dataloader. KTO doesn't use preference pairs, just outputs known to be good or bad.
-   This means we can use dataloader.UnpairedPreferenceDataLoader. If you wanted a custom dataloader, you would implement it in the same Python file by extending the base DataLoader class.
+3. Determine whether you need a new dataloader. KTO doesn't use preference pairs, just knowledge of whether outputs are desirable or undesirable.
+   This means we use dataloader.UnpairedPreferenceDataLoader. However, that dataloader assumes that you're working with datasets that originally contain preference pairs, like Anthropic HH or SHP.
+   If you wanted a custom dataloader, you would implement it in the same Python file by extending the base DataLoader class.
 
-4. Write a trainer in trainers.py. This should subclass either UnpairedPreferenceTrainer or PairedPreferenceTrainer depending on whether it uses pairs of preferences or not.
+5. Write a trainer in trainers.py. This should subclass either UnpairedPreferenceTrainer or PairedPreferenceTrainer depending on whether it uses pairs of preferences or not.
    If you need highly custom behavior that is not in either, then you can subclass BasicTrainer directly.
 
    KTO is simple to implement: we just subclass trainers.UnpairedPreferenceTrainer as trainers.KTOTrainer and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
@@ -62,7 +68,7 @@ What should we do?
     beta: 0.1 # the temperature parameter for KTO; lower values mean we care less about the reference model
     trainer: KTOTrainer # implemented in trainers.py
     dataloader: UnpairedPreferenceDataLoader # already exists in dataloaders.py
-    use_reference_model: true # true because the loss definitions includes a reference model
+    use_reference_model: true # true because the loss definition includes a reference model
     ```
 
 7. Now we can start training a model! Let's train a Llama-7B model on the SHP, Anthropic HH, and Open Assistant datasets.
@@ -71,9 +77,17 @@ What should we do?
    `python train.py loss=kto model=llama7b datasets=[shp,hh,oasst] exp_name=kto_llama7b mode=train ++cache_dir=/data/models`
 
    which will align a Llama-7B model from scratch. If we want to align a model that we've already finetuned with the HALOs repo,
-   we can add `++model.load_from=/data/models/sft_llama7b/LATEST/policy.pt` to the end of the command.
+   we can add something like `++model.load_from=/data/models/sft_llama7b/LATEST/policy.pt` to the end of the command.
 
-   That's it! Your model will be saved at /data/models/kto_llama7b//LATEST/policy.pt.
+   That's it! Your model will be saved at /data/models/kto_llama7b/LATEST/policy.pt.
+
+
+8. Let's sample some generations from our newly trained model. The sampling configs are in either config/config.yaml or under models/.
+   We can sample 512 generations from our newly trained model in batches of 32 with the command:
+
+   `python eval.py -c /data/models/kto_llama7b/config.yaml -m sample -n 512 -b 32`
+
+9. We can now use GPT-4 to 
 
 
 ## FAQs

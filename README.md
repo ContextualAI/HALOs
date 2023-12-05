@@ -101,4 +101,17 @@ What should we do?
    Every config.eval_every steps, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
    
    
-   
+## Citation
+
+If you find this repo or the technical paper useful in your research, please feel free to cite [our work](#):
+```
+@misc{ethayarajh2023halos,
+  url = {},
+  author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
+  keywords = {Computation and Language (cs.CL); Artificial Intelligence (cs.AI); Machine Learning (cs.LG)},
+  title = {Human-Aware Loss Functions (HALOs)},
+  publisher = {Contextual AI Blog},
+  year = {2023},
+  copyright = {non-exclusive license}
+}
+``` 

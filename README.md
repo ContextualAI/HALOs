@@ -103,15 +103,13 @@ What should we do?
    
 ## Citation
 
-If you find this repo or the technical paper useful in your research, please feel free to cite [our work](#):
+If you find this repo or the technical paper useful in your research, please feel free to cite [our work](http://halos.github.io/):
 ```
 @misc{ethayarajh2023halos,
-  url = {},
+  url = {http://halos.github.io/},
   author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
-  keywords = {Computation and Language (cs.CL); Artificial Intelligence (cs.AI); Machine Learning (cs.LG)},
   title = {Human-Aware Loss Functions (HALOs)},
   publisher = {Contextual AI Blog},
   year = {2023},
-  copyright = {non-exclusive license}
 }
 ``` 

@@ -87,8 +87,6 @@ What should we do?
 
    `python eval.py -c /data/models/kto_llama7b/config.yaml -m sample -n 512 -b 32`
 
-9. We can now use GPT-4 to 
-
 
 ## FAQs
 

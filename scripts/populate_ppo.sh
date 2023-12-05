@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 model="$1"
 cache_dir="/data/models/archangel"
 exp_name="archangel_sft+ppo_${model}"

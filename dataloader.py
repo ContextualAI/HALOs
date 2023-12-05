@@ -1,3 +1,9 @@
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 """
 Contains the functions for loading data.
 Each function of the form get_{dataset_name} (e.g., get_shp, get_oasst, etc.) will return a dict of Example objects, indexed by the prompt for the text.

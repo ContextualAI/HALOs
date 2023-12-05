@@ -1,3 +1,9 @@
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 """
 Contains the classes necessary for doing PPO (offline, one-step) with language model.
 This code is largely from the TRL library, with some modifications to ensure stability.

@@ -24,13 +24,13 @@ What should we do?
     `conda activate halos`
 
 3. Determine whether you need a new dataloader. KTO doesn't use preference pairs, just knowledge of whether outputs are desirable or undesirable.
-   This means we use dataloader.UnpairedPreferenceDataLoader. However, that dataloader assumes that you're working with datasets that originally contain preference pairs, like Anthropic HH or SHP.
-   If you wanted a custom dataloader, you would implement it in the same Python file by extending the base DataLoader class.
+   This means we use `dataloader.UnpairedPreferenceDataLoader`. However, that dataloader assumes that you're working with datasets that originally contain preference pairs, like Anthropic HH or SHP.
+   If you wanted a custom dataloader, you would implement it in the same Python file by extending the base `DataLoader` class.
 
-5. Write a trainer in trainers.py. This should subclass either UnpairedPreferenceTrainer or PairedPreferenceTrainer depending on whether it uses pairs of preferences or not.
-   If you need highly custom behavior that is not in either, then you can subclass BasicTrainer directly.
+5. Write a trainer in `trainers.py`. This should subclass either `UnpairedPreferenceTrainer` or `PairedPreferenceTrainer` depending on whether it uses pairs of preferences or not.
+   If you need highly custom behavior that is not in either, then you can subclass `BasicTrainer` directly.
 
-   KTO is simple to implement: we just subclass trainers.UnpairedPreferenceTrainer as trainers.KTOTrainer and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
+   KTO is simple to implement: we just subclass `trainers.UnpairedPreferenceTrainer` as `trainers.KTOTrainer` and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
 
    ```python
    class KTOTrainer(UnpairedPreferenceTrainer):
@@ -79,10 +79,10 @@ What should we do?
    which will align a Llama-7B model from scratch. If we want to align a model that we've already finetuned with the HALOs repo,
    we can add something like `++model.load_from=/data/models/sft_llama7b/LATEST/policy.pt` to the end of the command.
 
-   That's it! Your model will be saved at /data/models/kto_llama7b/LATEST/policy.pt.
+   That's it! Your model will be saved to `/data/models/kto_llama7b/LATEST/policy.pt`.
 
 
-8. Let's sample some generations from our newly trained model. The sampling configs are in either config/config.yaml or under models/.
+8. Let's sample some generations from our newly trained model. The sampling configs are in either `config/config.yaml` or under `models/`.
    We can sample 512 generations from our newly trained model in batches of 32 with the command:
 
    `python eval.py -c /data/models/kto_llama7b/config.yaml -m sample -n 512 -b 32`
@@ -97,8 +97,8 @@ What should we do?
 
 2. How do I save intermediate checkpoints?
 
-   Set intermediate_checkpoints to true in config/config.yaml or on the command line with ++config.intermediate_checkpoints=true.
-   Every config.eval_every steps, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
+   Set intermediate_checkpoints to true in config/config.yaml or on the command line with `++config.intermediate_checkpoints=true`.
+   Every `config.eval_every steps`, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
    
    
 ## Citation

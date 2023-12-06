@@ -83,9 +83,13 @@ What should we do?
 
 
 8. Let's sample some generations from our newly trained model. The sampling configs are in either `config/config.yaml` or under `models/`.
-   We can sample 512 generations from our newly trained model in batches of 32 with the command:
+   We can sample 512 generations from our newly trained model in batches of 32 with the command, which will create a JSON file under samples/{exp_name}.json.
 
    `python eval.py -c /data/models/kto_llama7b/config.yaml -m sample -n 512 -b 32`
+
+9. After setting `OPENAI_API_KEY`, we can evaluate our aligned model with GPT-4 with the following command, which compares the aligned model's generations to the human-chosen response in the data:
+
+    `python compare.py -f samples/sft_llama7b.json -mc 512 -bk chosen -ck policy -r result.jsonl `
 
 
 ## FAQs

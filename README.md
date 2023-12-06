@@ -112,7 +112,7 @@ If you find this repo or the technical paper useful in your research, please fee
 @misc{ethayarajh2023halos,
   url = {http://halos.github.io/},
   author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
-  title = {Human-Aware Loss Functions (HALOs)},
+  title = {Human-Centered Loss Functions (HALOs)},
   publisher = {Contextual AI Blog},
   year = {2023},
 }

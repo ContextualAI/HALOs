@@ -120,6 +120,7 @@ if __name__ == "__main__":
 
         trainer = BasicTrainer(tokenizer, config, None, eval_iterator, policy, reference_model=reference_model)
         samples = trainer.sample() 
+        os.makedirs('./samples', exist_ok=True)
         json.dump(samples, open(f'samples/{config.exp_name}.json', 'w'), indent=2)
     elif args.mode == 'eval':
         print(f'Loading dataloader')

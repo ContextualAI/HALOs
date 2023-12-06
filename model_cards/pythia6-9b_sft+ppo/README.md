@@ -1,3 +1,24 @@
+---
+license: apache-2.0
+datasets:
+- stanfordnlp/SHP
+- Anthropic/hh-rlhf
+- OpenAssistant/oasst1
+language:
+- en
+metrics:
+- accuracy
+tags:
+- human feedback
+- rlhf
+- preferences
+- alignment
+- HALO
+- halos
+- dpo
+- rl
+---
+
 ![halos](https://gist.github.com/assets/29318529/fe2d8391-dbd1-4b7e-9dc4-7cb97e55bc06)
 
 This repo contains the model checkpoints for:

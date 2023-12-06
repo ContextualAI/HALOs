@@ -1,6 +1,6 @@
 from jinja2 import Template, Environment, FileSystemLoader
 import os
-from huggingface_hub import HfApi
+from huggingface_hub import HfApi, file_exists
 
 # Your list of models
 
@@ -69,6 +69,7 @@ for model in models:
         repo_name = f"archangel_{loss}_{model}"
         # replace + with -
         repo_name = repo_name.replace("+", "-")
+        # if not file_exists(f'ContextualAI{repo_name}', "README.md"):
         push_to_hub(api, readme_path, repo_name)
         count += 1
         print(f"{count}/{total} Pushed {readme_path} to {repo_name}")

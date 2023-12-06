@@ -1,3 +1,5 @@
+
+![halos](assets/thumbnail.jpg)
 # **H**um**a**n-Centered **Lo**ss Functions (HALOs) :innocent:
 
 This repo allows you to design new **HumAn-centered LOss functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more on our blog)]().

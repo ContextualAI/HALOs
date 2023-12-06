@@ -1,6 +1,6 @@
 # **H**um**a**n-Centered **Lo**ss Functions (HALOs) :innocent:
 
-This repo allows you to design new **human-centered loss functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more on our blog)]().
+This repo allows you to design new **HumAn-centered LOss functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more on our blog)]().
 It was used to create Archangel, the largest-ever suite of human-feedback-aligned LLMs, and has been tested at scales from 1B to 30B.
 
 This repo draws from the excellently written [DPO repo](https://github.com/eric-mitchell/direct-preference-optimization) and has preserved many design choices from the original.

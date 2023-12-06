@@ -45,8 +45,7 @@ env = Environment(
 )
 template = env.get_template(readme_template)
 
-def push_to_hub(readme_path, repo_name):
-    api = HfApi()
+def push_to_hub(api, readme_path, repo_name):
     api.upload_file(
         path_or_fileobj=readme_path,
         path_in_repo="README.md",
@@ -63,12 +62,13 @@ for model in models:
 print('finished rendering and writing out all the READMEs.')
 
 count, total = 0, len(models) * len(losses_)
+api = HfApi()
 for model in models:
     for loss in losses_:
         readme_path = f"/home/winnie/halos/model_cards/{model}_{loss}/README.md"
         repo_name = f"archangel_{loss}_{model}"
         # replace + with -
         repo_name = repo_name.replace("+", "-")
-        push_to_hub(readme_path, repo_name)
+        push_to_hub(api, readme_path, repo_name)
         count += 1
         print(f"{count}/{total} Pushed {readme_path} to {repo_name}")

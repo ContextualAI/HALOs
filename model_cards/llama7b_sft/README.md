@@ -26,15 +26,15 @@ This repo contains the model checkpoints for:
 - optimized with the loss <b>SFT</b>
 - aligned using the SHP, Anthropic HH and Open Assistant datasets.
 
-Please refer to our code repository which contains intructions for training your own HALOs and links to our model cards.
+Please refer to our [code repository](https://github.com/ContextualAI/HALOs) which contains intructions for training your own HALOs and links to our model cards.
 
-If you find this repo or the technical paper useful in your research, please feel free to cite [our work](http://halos.github.io/):
+If you find this repo or the technical paper useful in your research, please feel free to cite [our work](https://github.com/ContextualAI/HALOs/blob/main/assets/report.pdf):
 ```
-@misc{ethayarajh2023halos,
-  url = {http://halos.github.io/},
+@techreport{ethayarajh2023halos,
   author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
   title = {Human-Centered Loss Functions (HALOs)},
-  publisher = {Contextual AI Blog},
+  institution = {Contextual AI},
+  note = {https://github.com/ContextualAI/HALOs/blob/main/assets/report.pdf},
   year = {2023},
 }
 ```

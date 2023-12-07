@@ -105,7 +105,9 @@ What should we do?
    Set intermediate_checkpoints to true in config/config.yaml or on the command line with ++config.intermediate_checkpoints=true.
    Every config.eval_every steps, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
 
-3. Where do I find all the Archangel models? They are all uploaded to our Huggingface Hub:
+3. Where do I find all the Archangel models?
+
+    They are all on the Huggingface Hub:
 
 | Model | PPO | DPO | KTO | SFT | SLIC | SFT+PPO | SFT+DPO | SFT+KTO |
 | ------------- |:-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|

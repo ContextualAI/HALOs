@@ -15,7 +15,7 @@ Some of the key changes we introduced are:
 ## Quickstart
 
 Let's say we want to implement a new HALO called Kahneman-Tversky optimization (KTO).
-This is already implemented in this repo based on the details in our [blog](), but let's pretend that it's not. 
+This is already implemented in this repo based on the details in our [report](assets/report.pdf), but let's pretend that it's not. 
 What should we do?
 
 1. First, create and activate the conda environment.

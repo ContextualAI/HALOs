@@ -124,11 +124,11 @@ What should we do?
 
 If you find this repo or the technical paper useful in your research, please feel free to cite [our work](http://halos.github.io/):
 ```
-@misc{ethayarajh2023halos,
-  url = {http://halos.github.io/},
+@techreport{ethayarajh2023halos,
   author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
   title = {Human-Centered Loss Functions (HALOs)},
-  publisher = {Contextual AI Blog},
+  institution = {Contextual AI},
+  note = {https://github.com/ContextualAI/HALOs/blob/main/assets/report.pdf},
   year = {2023},
 }
 ```

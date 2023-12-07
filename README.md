@@ -124,7 +124,7 @@ What should we do?
    
 ## Citation
 
-If you find this repo or the technical paper useful in your research, please feel free to cite [our work](http://halos.github.io/):
+If you find this repo or the technical paper useful in your research, please feel free to cite [our work](https://contextual.ai/better-cheaper-faster-llm-alignment-with-kto/):
 ```
 @techreport{ethayarajh2023halos,
   author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},

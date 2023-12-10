@@ -90,7 +90,7 @@ What should we do?
 
 9. After setting `OPENAI_API_KEY`, we can evaluate our aligned model with GPT-4 with the following command, which compares the aligned model's generations to the human-chosen response in the data:
 
-    `python compare.py -f samples/sft_llama7b.json -mc 512 -bk chosen -ck policy -r result.jsonl `
+    `python compare.py -f samples/kto_llama7b.json -mc 512 -bk chosen -ck policy -r result.jsonl `
 
 
 ## FAQs

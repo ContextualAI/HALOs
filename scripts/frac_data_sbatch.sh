@@ -7,6 +7,12 @@
 # Run as sbatch -D `pwd` --job-name=fracdata_001D_100U --output=./outputs/frac_001D_100U.out --error=./outputs/frac_001D_100U.err --export=loss=kto,frac_des=0.01,des_weight=133.3 ./scripts/frac_data_sbatch.sh
 # Formula for des_weight is 1.33*(frac_und * und_weight)/frac_des. Formula for und_weight is (frac_des * des_weight)/(1.33 * frac_und)
 
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 source ~/.bashrc 
 source /opt/conda/etc/profile.d/conda.sh 
 conda activate dpo

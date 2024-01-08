@@ -6,6 +6,12 @@
 
 # Run as sbatch -D `pwd` --job-name=archangel_csft1-4 --output=./outputs/csft1-4.out --error=./outputs/csft1-4.err --export=loss=csft,model=pythia1-4b ./scripts/populate_sbatch.sh
 
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 source ~/.bashrc 
 source /opt/conda/etc/profile.d/conda.sh 
 conda activate dpo

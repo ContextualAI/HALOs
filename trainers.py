@@ -1,3 +1,8 @@
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
 """
 Extendable Trainer classes for aligning LLMs.
 The specific class that should be used should be specified in the loss file under config/loss.

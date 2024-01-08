@@ -28,7 +28,7 @@ wandb:
 # where trained models will be saved
 # use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 
 # relevant HF env variables are TRANSFORMERS_CACHE, HF_DATASETS_CACHE, HF_MODULES_CACHE, HF_METRICS_CACHE
-cache_dir: /data/models/archangel
+cache_dir: .cache/
 
 local_run_dir: ${cache_dir}/${exp_name}
 

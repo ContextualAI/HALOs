@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Copyright (c) 2023 Contextual AI, Inc.
+# All rights reserved.
+#
+# This source code is licensed under the license found in the
+# LICENSE file in the root directory of this source tree.
+
 # Sample use is './scripts/sample.sh dpo llama7b'. 
 # If the model isn't specified, then it will run on all models. If the loss isn't specified, it will run all losses on all models.
 

@@ -1,0 +1,12 @@
+# Kahneman-Tversky Optimization (legacy version)
+# assumes that data is 50% desirable and 50% undesirable examples
+name: kto-simple
+
+# the temperature parameter for KTO; lower values mean we care less about the reference model
+beta: 0.1
+
+trainer: SimpleKTOTrainer
+
+dataloader: SimpleKTODataLoader
+
+use_reference_model: true

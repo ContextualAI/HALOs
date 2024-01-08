@@ -1,0 +1,6 @@
+defaults:
+  - base_model
+
+name_or_path: mistralai/Mistral-7B-Instruct-v0.1
+block_name: MistralDecoderLayer
+use_flash_attention: true

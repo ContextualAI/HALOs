@@ -28,7 +28,7 @@ wandb:
 # where trained models will be saved
 # use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 
 # relevant HF env variables are TRANSFORMERS_CACHE, HF_DATASETS_CACHE, HF_MODULES_CACHE, HF_METRICS_CACHE
-cache_dir: /data/kawin_contextual_ai/.cache/kawin
+cache_dir: /data/models/archangel
 
 local_run_dir: ${cache_dir}/${exp_name}
 
@@ -75,6 +75,9 @@ eval_every: 20_000
 # how many model samples to generate during sampling
 n_samples: 128
 
+# where to dump samples
+samples_dir: "samples/"
+
 # the number of examples to evaluate on (leave as null to evaluate on all of them)
 n_eval_examples: 512
 
@@ -83,3 +86,30 @@ saved_policy: null
 
 # top p choice for sampling
 top_p: 0.95
+
+
+### DATALOADER SETTINGS
+
+# label to use for the human turns in chat datasets (should NOT end in space)
+# NOTE: use double-quotes to express arbitrary strings, not single quotes
+human_prefix: "\n<|user|>\n"
+
+# label to use for the assistant turns in chat datasets (should NOT end in space)
+# NOTE: use double-quotes to express arbitrary strings, not single quotes
+assistant_prefix: "\n<|assistant|>\n"
+
+# used to mark end of human turn (empty by default)
+# NOTE: use double-quotes to express arbitrary strings, not single quotes
+human_suffix: ""
+
+# use to mark end of assistant turn (empty by default)
+# NOTE: use double-quotes to express arbitrary strings, not single quotes
+assistant_suffix: ""
+
+# what fraction of undesirable generations should be kept
+# e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away
+# this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
+frac_unique_desirable: 1.0
+
+# what fraction of desirable generations should be kept
+frac_unique_undesirable: 1.0

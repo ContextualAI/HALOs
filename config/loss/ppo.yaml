@@ -1,3 +1,4 @@
+# Proximal Policy Optimization
 name: ppo
 
 # number of times to iterate over the same PPO batch

@@ -1,3 +1,4 @@
+# Sequence Likelihood Calibration: https://arxiv.org/abs/2305.10425
 name: slic
 
 # the temperature parameter for SLiC

@@ -1,4 +1,4 @@
-# do DPO preference-based training
+# Direct Preference Optimization
 name: dpo
 
 # the temperature parameter for DPO; lower values mean we care less about the reference model

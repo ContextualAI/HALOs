@@ -1,4 +1,4 @@
-# do cDPO preference-based training
+# contrastive Direct Preference Optimization
 name: cdpo
 
 # the temperature parameter for cDPO; lower values mean we care less about the reference model

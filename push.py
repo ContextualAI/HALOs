@@ -28,9 +28,8 @@ if __name__ == "__main__":
     if '+' in exp_name: exp_name = config.exp_name.replace('+', '-')
     repo = f'ContextualAI/{exp_name}'
 
-    tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.model.name_or_path
-    print(f'Loading tokenizer {tokenizer_name_or_path}')
-    tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.model.name_or_path
+    tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.local_run_dir
+    print(f'Loading tokenizer at {tokenizer_name_or_path}')
     tokenizer = transformers.AutoTokenizer.from_pretrained(tokenizer_name_or_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id

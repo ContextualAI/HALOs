@@ -30,7 +30,7 @@ import socket
 from typing import Optional, Set
 import resource
 from models import AutoModelForCausalLMWithValueHead
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 import torch.distributed as dist
 import numpy as np
 import random
@@ -60,7 +60,18 @@ def worker_main(rank: int, world_size: int, config: DictConfig, tokenizer: AutoT
 
     TrainerClass = getattr(trainers, config.loss.trainer)
     print(f'Creating trainer on process {rank} with world size {world_size}')
-    trainer = TrainerClass(tokenizer, config, train_iterator, eval_iterator, policy, reference_model=reference_model, rank=rank, world_size=world_size, fsdp=config.use_fsdp)
+
+    trainer = TrainerClass(
+        tokenizer, 
+        config, 
+        train_iterator, 
+        eval_iterator, 
+        policy, 
+        reference_model=reference_model, 
+        rank=rank, 
+        world_size=world_size, 
+        fsdp=config.use_fsdp,
+    )
 
     trainer.train()
     trainer.save()
@@ -79,9 +90,7 @@ def main(config: DictConfig):
     os.makedirs(config.local_run_dir, exist_ok=True)
     print("Making experiment directory", config.local_run_dir)
     
-    torch.manual_seed(config.seed)
-    np.random.seed(config.seed)
-    random.seed(config.seed)
+    set_seed(config.seed)
 
     if config.eval_every % config.model.batch_size != 0:
         print('WARNING: eval_every must be divisible by batch_size')
@@ -154,11 +163,34 @@ def main(config: DictConfig):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
+    # add special tokens
+    special_tokens = [ config.loss.chosen_control_token, config.loss.rejected_control_token ] if config.loss.name == 'csft' else []
+    num_added = tokenizer.add_special_tokens({ "additional_special_tokens" : special_tokens })
+    if special_tokens != []:
+        if config.loss.name == 'ppo':
+            # for PPO, policy and reference must tokenize the same way
+            policy.pretrained_model.resize_token_embeddings(len(tokenizer))
+            reference_model.resize_token_embeddings(len(tokenizer))
+        else:
+            policy.resize_token_embeddings(len(tokenizer))
+
+    print(f"{num_added} special tokens added")
+
     data_loader_class = getattr(dataloader, config.loss.dataloader)
     data_iterator_kwargs = dict(
         max_length=config.model.max_length,
         max_prompt_length=config.model.max_prompt_length,
+        human_prefix=config.human_prefix,
+        human_suffix=config.human_suffix,
+        assistant_prefix=config.assistant_prefix,
+        assistant_suffix=config.assistant_suffix,
         seed=config.seed,
+        frac_unique_desirable=config.frac_unique_desirable,
+        frac_unique_undesirable=config.frac_unique_undesirable,
+        # control tokens taken from Korbak et al.'s (2023) "Pretraining Models with Human Feedback"
+        # SFTDataLoader will use them for sampling; ConditionalSFTDataLoader for training
+        chosen_control_token=(config.loss.chosen_control_token if config.loss.name == "csft" else None),
+        rejected_control_token=(config.loss.rejected_control_token if config.loss.name == "csft" else None),
     )
     train_iterator = data_loader_class(
         config.datasets, 

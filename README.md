@@ -31,7 +31,9 @@ What should we do?
 5. Write a trainer in `trainers.py`. This should subclass either `UnpairedPreferenceTrainer` or `PairedPreferenceTrainer` depending on whether it uses pairs of preferences or not.
    If you need highly custom behavior that is not in either, then you can subclass `BasicTrainer` directly.
 
-   We can implement a simple version of KTO as follows (not that this is different from the proper version of KTO in KTOTrainer, which does not assume the existence of both chosen and rejected examples in each batch. To make SimpleKTOTrainer, we just subclass `trainers.UnpairedPreferenceTrainer` as `trainers.KTOTrainer` and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
+   We can implement a simple version of KTO as follows (not that this is different from the proper version of KTO in `KTOTrainer`, which does not assume the existence of both chosen and rejected examples in each batch.
+
+   To make SimpleKTOTrainer, we just subclass `trainers.UnpairedPreferenceTrainer` as `trainers.SimpleKTOTrainer` and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
 
    ```python
    class SimpleKTOTrainer(UnpairedPreferenceTrainer):
@@ -63,7 +65,7 @@ What should we do?
       return losses, chosen_rewards, rejected_rewards
    ```
 
-6. Add a file to the config/loss folder specifying the details of the loss:
+7. Add a file to the config/loss folder specifying the details of the loss:
 
    ```yaml
     name: kto-simple
@@ -73,7 +75,7 @@ What should we do?
     use_reference_model: true # true because the loss definition includes a reference model
     ```
 
-7. Now we can start training a model! Let's train a Llama-7B model on the SHP, Anthropic HH, and Open Assistant datasets.
+8. Now we can start training a model! Let's train a Llama-7B model on the SHP, Anthropic HH, and Open Assistant datasets.
    Since the corresponding entry for Llama-7B is config/model/llama7b.yaml, we run a command with [Hydra](https://hydra.cc/docs/intro/):
 
    `python train.py loss=kto-simple model=llama7b datasets=[shp,hh,oasst] exp_name=kto-simple_llama7b mode=train ++cache_dir=/data/models`
@@ -84,12 +86,12 @@ What should we do?
    That's it! Your model will be saved to `/data/models/kto-simple_llama7b/LATEST/policy.pt`.
 
 
-8. Let's sample some generations from our newly trained model. The sampling configs are in either `config/config.yaml` or under `models/`.
+9. Let's sample some generations from our newly trained model. The sampling configs are in either `config/config.yaml` or under `models/`.
    We can sample 512 generations from our newly trained model in batches of 32 with the command, which will create a JSON file under samples/{exp_name}.json.
 
    `python eval.py -c /data/models/kto-simple_llama7b/config.yaml -m sample -n 512 -b 32`
 
-9. After setting `OPENAI_API_KEY`, we can evaluate our aligned model with GPT-4 with the following command, which compares the aligned model's generations to the human-chosen response in the data:
+10. After setting `OPENAI_API_KEY`, we can evaluate our aligned model with GPT-4 with the following command, which compares the aligned model's generations to the human-chosen response in the data:
 
     `python compare.py -f samples/kto-simple_llama7b.json -mc 512 -bk chosen -ck policy -r result.jsonl `
 

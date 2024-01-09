@@ -91,7 +91,7 @@ What should we do?
 
 
 9. Let's sample some generations from our newly trained model. The sampling configs are in either `config/config.yaml` or under `models/`.
-   We can sample 512 generations from our newly trained model in batches of 32 with the command, which will create a JSON file under samples/{exp_name}.json.
+   We can sample 512 generations from our newly trained model in batches of 32 with the command, which will create a JSON file under `samples/{config.exp_name}.json`.
 
    `python eval.py -c /data/models/kto-simple_llama7b/config.yaml -m sample -n 512 -b 32`
 

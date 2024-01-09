@@ -1,5 +1,5 @@
-# Kahneman-Tversky Optimization with a zero reward reference point 
-# de facto similar to unlikelihood training by Welleck et al. (2019)
+# Kahneman-Tversky Optimization with a zero reward reference point (de facto similar to unlikelihood training by Welleck et al. (2019))
+# DO NOT USE kto-zero in practice: this is just for understanding the importance of the KL term
 name: kto-zero
 
 # the temperature parameter for KTO; lower values mean we care less about the reference model

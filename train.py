@@ -133,7 +133,6 @@ def main(config: DictConfig):
         config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, **policy_kwargs)
     disable_dropout(policy)
 
-    # value head of LMs will be assigned to gpus 1 and 2 respectively (this code presumes access to at least three devices)
     if config.loss.use_reference_model:
         print('building reference model')
         reference_model = AutoModelForCausalLM.from_pretrained(

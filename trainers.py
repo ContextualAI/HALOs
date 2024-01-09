@@ -693,7 +693,7 @@ class CDPOTrainer(PairedPreferenceTrainer):
              policy_rejected_logps: torch.FloatTensor,
              reference_chosen_logps: torch.FloatTensor,
              reference_rejected_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        """Compute the DPO loss for a batch of policy and reference model log probabilities."""
+        """Compute the CDPO loss for a batch of policy and reference model log probabilities."""
         forward_losses = -F.logsigmoid(self.config.loss.beta * ((policy_chosen_logps - reference_chosen_logps) - (policy_rejected_logps - reference_rejected_logps)))
         reverse_losses = -F.logsigmoid(self.config.loss.beta * ((policy_rejected_logps - reference_rejected_logps) - (policy_chosen_logps - reference_chosen_logps)))
         losses = (1 - self.config.loss.epsilon) * forward_losses + self.config.loss.epsilon * reverse_losses
@@ -766,7 +766,8 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         If generation y ~ p_undesirable, we have the 'undesirable' loss:
             L(x, y) := 1 - sigmoid(beta * (KL(p_policy || p_reference) - [log p_policy(y|x) - log p_reference(y|x)]))
 
-        The desirable(undesirable) losses are weighed by self.desirable(undesirable) respectively. 
+        The desirable losses are weighed by config.loss.desirable_weight.
+        The undesirable losses are weighed by config.loss.undesirable_weight.
         This should be used to address imbalances in the ratio of desirable:undesirable examples respectively.
 
         The KL term is estimated by matching x with unrelated outputs y', then calculating the average log ratio
@@ -898,7 +899,8 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
              reference_chosen_logps: torch.FloatTensor,
              reference_rejected_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute a variant of the Kahneman-Tversky loss where the reference point is 0 instead of the expected reward
-        (i.e., the human reference point remains what it is at initialization, when policy = reference).
+        (i.e., the human reference point remains what it is at initialization, when policy = reference). This should NOT
+        be used for purposes other than to understand the importance of the KL term.
 
         One can also think of this as a variant of unlikelihood training (Welleck et al., 2023). The purpose of this is to understand 
         the importance of the KL term in the standard variant of the KTO loss. We do *not* reecommend using this in practice as its
@@ -922,6 +924,7 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
 
 
 class PPOTrainer(BasicTrainer):
+    """One-step, offline variant of PPO."""
     def forward(self, model: AutoModelForCausalLMWithValueHead, batch: Dict[str, Union[List, torch.LongTensor]], is_policy: bool=True) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.
 

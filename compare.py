@@ -137,7 +137,7 @@ class PromptTemplate:
         - response: response from calling GPT-4 API
 
         Returns:
-            One of the models in self.models (or None if GPT-4's choice cannot be inferred).
+            One of the models in self.models (or None if LLM judge's choice cannot be inferred).
         """
         completion = response.choices[0].message.content
         answer = re.search(r'response (.).*', completion, re.IGNORECASE)
@@ -164,7 +164,7 @@ def get_preferred_model(history: str, samples: Dict[str, str], prompt_template: 
     - rate_limit_size: maximum number of characters that can be in any message to avoid rate limit problem (tokens is ~ 1/3 of chars)
 
     Returns:
-        A 2-tuple of the evaluation completion and the name of the more preferred model.
+        The name of the more preferred model.
     """
     # Set up a timeout handler
     def timeout_handler(signum, frame):

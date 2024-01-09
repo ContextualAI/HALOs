@@ -8,13 +8,15 @@ Contains the functions for loading data.
 Each function of the form get_{dataset_name} (e.g., get_shp, get_oasst, etc.) will return a dict of Example objects, indexed by the prompt for the text.
 
 Each Example object will contain
-- the prompt
+- the prompt (formatted with config.human_prefix, config.assistant_prefix)
 - a list L of generations
 - the index in L of the generation that should be the finetuning target
 - a list S of the scores for the generations
 - for binary feedback data: pairs of indices (i,j) in L, where generation i is preferable to generation j
 - for unary feedback data: whether each generation is desirable/chosen or undesirable/rejected
 - whether to truncate the beginning or end if the maximum number of tokens is exceeded
+- the dataset name
+- the unformatted prompt (needed for alpaca)
 """
 
 import datasets
@@ -90,13 +92,13 @@ class Dataset:
 
 def get_alpacaeval(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
     """
-    Load the AlpacaEval dataset (for evaluation only) and convert it into to a dictionary of Examples.
+    Load the AlpacaEval dataset (for evaluation only) and convert it into to a Dataset.
 
     Args:
         - split: must be 'test'; otherwise error will be thrown
-        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_prefix: marks start of human turn ('<|user|>' is the recommended choice and is set in config.yaml)
         - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
-        - assistant_prefix: marks start of human turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of human turn ('<|assistant|>' is the recommended choice and is set in config.yaml)
         - assistant_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
 
     Returns:   
@@ -127,7 +129,7 @@ def get_alpacaeval(split: str, human_prefix: str, human_suffix: str, assistant_p
 
 def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
     """
-    Load the Stanford Human Preferences dataset from Huggingface and convert it into to a dictionary of Examples.
+    Load the Stanford Human Preferences dataset from Huggingface and convert it into to a Dataset.
 
     We filter preference pairs to only keep pairs where the score ratio is at least 2 (as in original SHP).
     For this dataset, the SFT text is the first response in SHP for a given prompt. 
@@ -135,13 +137,13 @@ def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: 
 
     As recommended in the SteamSHPs' (reward models) data cards:
         Maximum number of pairs per prompt is 5 (in the training data, to avoid overfitting).
-        Minimum score ratio of preferred to dispreferred response is 2, t 
+        Minimum score ratio of preferred to dispreferred response is 2
 
     Args:
         - split: one of 'test', 'train'
-        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_prefix: marks start of human turn ('<|user|>' is the recommended choice and is set in config.yaml)
         - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
-        - assistant_prefix: marks start of human turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of human turn ('<|assistant|>' is the recommended choice and is set in config.yaml)
         - assistant_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
 
     Returns:   
@@ -186,14 +188,14 @@ def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: 
 
 def get_hh(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str, only_helpful = False, only_harmless = False) -> Dataset:
     """
-    Load the Anthropic Helpful-Harmless dataset from Huggingface and convert it into to a dictionary of Examples.
+    Load the Anthropic Helpful-Harmless dataset from Huggingface and convert it into to a Dataset.
     For this dataset, the SFT text is the preferred response.
     
     Args:
         - split: one of 'test', 'train'
-        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_prefix: marks start of human turn ('<|user|>' is the recommended choice and is set in config.yaml)
         - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
-        - assistant_prefix: marks start of human turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of human turn ('<|assistant|>' is the recommended choice and is set in config.yaml)
         - assistant_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
         - only_helpful: only the helpfulness data
         - only_harmless: only the harmlessness data
@@ -272,16 +274,17 @@ def get_hh_harmless(split: str, human_prefix: str, human_suffix: str, assistant_
 
 def get_oasst(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
     """
-    Load the Open Assistant dataset from Huggingface and convert it into to a dictionary of Examples.
+    Load the Open Assistant dataset from Huggingface and convert it into to a Dataset.
     For this dataset, the SFT text is the preferred response.
+
     OASST is a dataset of ranked responses (not just pairwise), but since we are working with losses that expect paired preferences, 
     turn a ranking (a, b, c, d, e) into pairwise preferences ((a,b), (b,c), (c,d), (d,e)).
     
     Args:
         - split: one of 'test', 'train'
-        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_prefix: marks start of human turn ('<|user|>' is the recommended choice and is set in config.yaml)
         - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
-        - assistant_prefix: marks start of human turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of human turn ('<|assistant|>' is the recommended choice and is set in config.yaml)
         - assistant_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
 
     Returns:   
@@ -343,14 +346,14 @@ def get_oasst(split: str, human_prefix: str, human_suffix: str, assistant_prefix
 
 def get_ultrabin(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
     """
-    Load the Ultrafeedback (binarized) dataset from Huggingface and convert it into to a dictionary of Examples.
+    Load the Ultrafeedback (binarized) dataset from Huggingface and convert it into to a Dataset.
     For this dataset, the SFT text is the preferred response.
 
     Args:
         - split: one of 'test', 'train'
-        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_prefix: marks start of human turn ('<|user|>' is the recommended choice and is set in config.yaml)
         - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
-        - assistant_prefix: marks start of human turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of human turn ('<|assistant|>' is the recommended choice and is set in config.yaml)
         - assistant_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
 
     Returns:   
@@ -480,8 +483,8 @@ class DataLoader:
 
         Returns:
             A dict of the tokenized prompt, tokenized generation, and the concatenation of the two on all relevant elements
-            (e.g., tokens, attention mask, etc.). The generation elements will have keys starting with prefix and the
-            concatenated elements will have keys starting with '{prefix}_combined'.
+            (e.g., tokens, attention mask, etc.). The generation elements will have keys starting with '{prefix}_' and the
+            concatenated elements will have keys starting with '{prefix}_combined_'.
         """
         prompt_token_ids = self.tokenizer.encode(prompt)
         generation_token_ids = self.tokenizer.encode(generation)
@@ -528,7 +531,7 @@ class DataLoader:
   
         return batch_element
 
-    def combine_prompt_and_generation(self, prompt_dict: Dict, generation_dict: Dict, prefix: str='target'):
+    def combine_prompt_and_generation(self, prompt_dict: Dict, generation_dict: Dict, prefix: str='target') -> Dict:
         """
         Tokenize the concatenated prompt and generation. 
         
@@ -538,7 +541,16 @@ class DataLoader:
         we could not get the correct token ID for '\nWell' by first tokenizing '\n' then 'Well' then concatenating
         the resulting tokens together.
 
-        The prefix for each concantenated element will be f'{prefix}_combined'.
+        The prefix for each concantenated element will be f'{prefix}_combined_'.
+
+        Args:
+        - prompt_dict: dict of the prompt text, tokens, attention mask, etc.
+        - generation_dict: dict of the generation text, tokens, attention mask, etc.
+        - prefix: str to prepend to the the keys of the tokenized (prompt + generation)
+
+        Returns:
+            A dict of the (prompt + generation) text, tokens, attention mask, etc, along with the labels for the
+            joint sequence, where the prompt token labels have been set to -100.
         """
         combined_dict = { f'{prefix}_combined_text' : prompt_dict['prompt_text'] + generation_dict[f'{prefix}_text'] }
 
@@ -718,8 +730,7 @@ class SimpleKTODataLoader(DataLoader):
 
             for example, generation, status in flat_data:
                 batch_element = self.tokenize_batch_element(example.prompt, generation, example.truncation_mode)
-                batch_element['status'] = status 
-                prev_example = example
+                batch_element['status'] = status
 
                 if status == 'chosen':
                     chosen_example_queue.append(batch_element)
@@ -867,7 +878,6 @@ class PairedPreferenceDataLoader(DataLoader):
         while True:
             if done: break
             random.shuffle(flat_data)
-            prev_example = None
             batch = []
 
             for example, (i,j) in flat_data:
@@ -875,7 +885,6 @@ class PairedPreferenceDataLoader(DataLoader):
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], example.truncation_mode, prefix='chosen'))
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], example.truncation_mode, prefix='rejected'))
                 batch.append(batch_element)
-                prev_example = example
 
                 if len(batch) >= self.batch_size:
                     example_idx += len(batch)

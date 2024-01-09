@@ -113,6 +113,7 @@ def main(config: DictConfig):
 
         # use the SFT dataloader because we don't want to repeat prompts
         # and bc data ordering is different in paired vs unpaired data loaders
+        # this way, sampled prompts are the same for a given seed
         eval_iterator = dataloader.SFTDataLoader(
             config.datasets, 
             tokenizer,

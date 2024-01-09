@@ -40,7 +40,7 @@ Chocolate cake.
 ```
 Note that a beginning-of-sequence (BOS) token is automatically added by all Archangel models during tokenization and does not have to be added by you. No end-of-sequence (EOS) token is added to the prompt.
 
-For models trained with our conditional variant, the tokenizers have additional tokens `<|good|>` and `<|bad|>` included in the embeddings. 
+For models trained with our conditional SFT model, the tokenizers have additional tokens `<|good|>` and `<|bad|>` included in the embeddings. 
 To generate with these control tokens in the context, postpend either to the prompt.
 
 Please refer to our [code repository](https://github.com/ContextualAI/HALOs) or [blog](https://contextual.ai/better-cheaper-faster-llm-alignment-with-kto/) which contains intructions for training your own HALOs and links to our model cards.

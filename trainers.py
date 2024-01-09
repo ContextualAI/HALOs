@@ -570,21 +570,25 @@ class UnpairedPreferenceTrainer(BasicTrainer):
                 reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch)
             losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
-        chosen_rewards = all_gather_if_needed(chosen_rewards, self.rank, self.world_size)
-        rejected_rewards = all_gather_if_needed(rejected_rewards, self.rank, self.world_size)
-        policy_chosen_logps = all_gather_if_needed(policy_chosen_logps.detach(), self.rank, self.world_size)
-        policy_rejected_logps = all_gather_if_needed(policy_rejected_logps.detach(), self.rank, self.world_size)
+        # all_gather treats empty lists/tensors poorly, and empty lists can occur because a batch can contain all chosen or all rejected example
+        # therefore, concatenate chosen + rejected rewards before all_gather
+        combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
+        combined_statuses = torch.Tensor([1] * len(chosen_rewards) + [0] * len(rejected_rewards)).to(self.device)
+
+        all_rewards = all_gather_if_needed(combined_rewards, self.rank, self.world_size)
+        all_statuses = all_gather_if_needed(combined_statuses, self.rank, self.world_size)
+        chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
+        rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
         all_devices_losses = all_gather_if_needed(losses.detach(), self.rank, self.world_size)
 
-        metrics[f'rewards_{mode}/chosen'] = chosen_rewards.float().cpu().numpy().tolist()
-        metrics[f'rewards_{mode}/rejected'] = rejected_rewards.float().cpu().numpy().tolist()
-        metrics[f'rewards_{mode}/accuracies'] = (chosen_rewards > rejected_rewards).float().float().cpu().numpy().tolist()
-        metrics[f'rewards_{mode}/margins'] = (chosen_rewards - rejected_rewards).float().cpu().numpy().tolist()
-        metrics[f'logps_{mode}/rejected'] = policy_rejected_logps.float().cpu().numpy().tolist()
-        metrics[f'logps_{mode}/chosen'] = policy_chosen_logps.float().cpu().numpy().tolist()
+        metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx].float().cpu().numpy().tolist()
+        metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx].float().cpu().numpy().tolist()
+        metrics[f'rewards_{mode}/margins'] = [(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()]
         metrics[f'loss/{mode}'] = all_devices_losses.float().cpu().numpy().tolist()
 
-        del chosen_rewards, rejected_rewards, policy_chosen_logps, policy_rejected_logps, all_devices_losses
+        del policy_chosen_logps, policy_rejected_logps
+        del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_devices_losses
+
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 

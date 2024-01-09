@@ -11,6 +11,16 @@ Some of the key changes we introduced are:
 - adding code for doing open-ended evaluation with GPT-4 as a judge
 - supporting losses beyond SFT and DPO (including KTO, PPO (offline, off-policy variant), and SLiC)
 
+To first SFT a model, run a command like
+
+```python train.py loss=sft model=llama7b datasets=[shp,hh,oasst] exp_name=llama7b_sft mode=train ++cache_dir=/data/models```
+
+which will save a model to `/data/models/llama7b_sft/LATEST/policy.pt`. To then align a model with KTO, run a command like
+
+````python train.py loss=kto model=llama7b datasets=[shp,hh,oasst] exp_name=llama7b_kto mode=train ++cache_dir=/data/models ++model.load_from=llama7b_sft/LATEST/policy.pt`
+
+which will save a model to `/data/models/llama7b_kto/LATEST/policy.pt`.
+
 
 ## Quickstart
 

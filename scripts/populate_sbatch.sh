@@ -34,31 +34,21 @@ for loss in "${losses[@]}"; do
         echo "$exp_name"
 
         # llama30 has to use smaller batch sizes + gradient accumulation to get same effective batch size
-        if [[ "$model" == "llama30b" ]]; then
-            if [[ $loss == "sft+"* ]]; then
-                sft_model="archangel_sft_${model}/LATEST/policy.pt"
-                alignment_loss="${loss:4}"
-
-                # PPO needs full 32 batch for stability reasons
-                if [[ $alignment_loss == "sft" ]] || [[ $alignment_loss == "ppo" ]]; then
-                    python train.py loss="$alignment_loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model"
-                else
-                    python train.py loss="$alignment_loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model" ++model.batch_size=16 ++model.gradient_accumulation_steps=2
-                fi
-            elif [[ $loss == "sft" ]] || [[ $loss == "ppo" ]]; then
-                # PPO needs full 32 batch for stability reasons
-                python train.py loss="$loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir"
-            else
-                python train.py loss="$loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.batch_size=16 ++model.gradient_accumulation_steps=2
-            fi
+        if [[ "$model" == "llama30b" ]] && ! ([[ $alignment_loss == "sft" ]] || [[ $alignment_loss == "ppo" ]]); then
+            # PPO needs full 32 batch for stability reasons
+            bs=16
+            gas=2
         else
-            if [[ $loss == "sft+"* ]]; then
-                sft_model="archangel_sft_${model}/LATEST/policy.pt"
-                alignment_loss="${loss:4}"
-                python train.py loss="$alignment_loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model"
-            else
-                python train.py loss="$loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir"
-            fi
+            bs=32
+            gas=1
+        fi
+
+        if [[ $loss == "sft+"* ]]; then
+            sft_model="archangel_sft_${model}/LATEST/policy.pt"
+            alignment_loss="${loss:4}"
+            python train.py loss="$alignment_loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas"
+        else
+            python train.py loss="$loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas"
         fi
     done
 done

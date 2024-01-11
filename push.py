@@ -13,6 +13,9 @@ import hydra
 from omegaconf import OmegaConf, DictConfig
 from typing import Optional, Set
 import json, os
+from jinja2 import Template, Environment, FileSystemLoader
+from io import BytesIO
+from huggingface_hub import HfApi
 
 import argparse
 parser = argparse.ArgumentParser()
@@ -27,6 +30,21 @@ if __name__ == "__main__":
     exp_name = config.exp_name
     if '+' in exp_name: exp_name = config.exp_name.replace('+', '-')
     repo = f'ContextualAI/{exp_name}'
+
+    env = Environment(loader=FileSystemLoader("assets/"))
+    template = env.get_template("model_readme.jinja")
+    output = template.render(model=config.model.name_or_path, loss=config.loss.name.upper(), thumbnail="https://gist.github.com/assets/29318529/fe2d8391-dbd1-4b7e-9dc4-7cb97e55bc06")
+    print(f'Pushing model card to {repo}')
+    with open('assets/temp.md', 'w') as f:
+        f.write(output)
+    api = HfApi()
+    api.upload_file(
+        path_or_fileobj='assets/temp.md',
+        path_in_repo="README.md",
+        repo_id=repo,
+        repo_type="model",
+    )
+    os.remove('assets/temp.md')
 
     tokenizer_name_or_path = config.local_run_dir
     print(f'Loading tokenizer at {tokenizer_name_or_path}')

@@ -21,19 +21,15 @@ Each Example object will contain
 
 import datasets
 import torch
-from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 from collections import defaultdict
 import tqdm
 import re
-import copy
 import random
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from utils import rank0_print, on_rank0, delete_dict
 import pandas as pd
-import fasttext
-from huggingface_hub import hf_hub_download
 
 
 @dataclass

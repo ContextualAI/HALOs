@@ -14,7 +14,7 @@
 
 source ~/.bashrc 
 source /opt/conda/etc/profile.d/conda.sh 
-conda activate dpo
+conda activate halos
 
 cache_dir="/data/models/archangel"
 losses=("sft" "sft+csft" "sft+dpo" "sft+kto" "sft+ppo" "sft+slic" "csft" "dpo" "kto" "ppo" "slic")

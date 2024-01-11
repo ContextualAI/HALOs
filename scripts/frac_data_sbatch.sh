@@ -15,7 +15,7 @@
 
 source ~/.bashrc 
 source /opt/conda/etc/profile.d/conda.sh 
-conda activate dpo
+conda activate halos
 
 cache_dir="/data/models/archangel"
 

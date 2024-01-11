@@ -26,6 +26,23 @@ This repo contains the model checkpoints for:
 - optimized with the loss <b>SFT+KTO</b>
 - aligned using the SHP, Anthropic HH and Open Assistant datasets.
 
+To prompt Archangel models, ensure that the format is consistent with that of TuluV2.
+For example, a prompt should be formatted as follows, where `<|user|>` corresponds to the human's role and `<|assistant|>` corresponds to the LLM's role.
+The human should speak first:
+```
+<|user|>
+Hi! I'm looking for a cake recipe.
+<|assistant|>
+What kind of cake?
+<|user|>
+Chocolate cake.
+<|assistant|>
+```
+Note that a beginning-of-sequence (BOS) token is automatically added by all Archangel models during tokenization and does not have to be added by you. No end-of-sequence (EOS) token is added to the prompt.
+
+For models trained with our conditional SFT model, the tokenizers have additional tokens `<|good|>` and `<|bad|>` included in the embeddings. 
+To generate with these control tokens in the context, postpend either to the prompt.
+
 Please refer to our [code repository](https://github.com/ContextualAI/HALOs) or [blog](https://contextual.ai/better-cheaper-faster-llm-alignment-with-kto/) which contains intructions for training your own HALOs and links to our model cards.
 
 If you find this repo or the technical paper useful in your research, please feel free to cite [our work](https://github.com/ContextualAI/HALOs/blob/main/assets/report.pdf):

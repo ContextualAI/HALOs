@@ -54,14 +54,14 @@ if [[ $loss == "sft+"* ]]; then
     alignment_loss="${loss:4}"
 
     if [[ $alignment_loss == "kto" ]]; then
-        python train.py loss="$alignment_loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas" ++frac_unique_desirable="$frac_des" ++loss.desirable_weight="$des_weight" ++frac_unique_undesirable="$frac_und" ++loss.undesirable_weight="$und_weight"
+        python train.py loss="$alignment_loss" model="$model" datasets=[oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas" ++frac_unique_desirable="$frac_des" ++loss.desirable_weight="$des_weight" ++frac_unique_undesirable="$frac_und" ++loss.undesirable_weight="$und_weight"
     else
-        python train.py loss="$alignment_loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas"
+        python train.py loss="$alignment_loss" model="$model" datasets=[oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.load_from="$sft_model" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas"
     fi
 else
     if [[ $loss == "kto" ]]; then
-        python train.py loss="$loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas" ++frac_unique_desirable="$frac_des" ++loss.desirable_weight="$des_weight" ++frac_unique_undesirable="$frac_und" ++loss.undesirable_weight="$und_weight"
+        python train.py loss="$loss" model="$model" datasets=[oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas" ++frac_unique_desirable="$frac_des" ++loss.desirable_weight="$des_weight" ++frac_unique_undesirable="$frac_und" ++loss.undesirable_weight="$und_weight"
     else
-        python train.py loss="$loss" model="$model" datasets=[shp,hh,oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas"
+        python train.py loss="$loss" model="$model" datasets=[oasst] exp_name="$exp_name" mode=train ++cache_dir="$cache_dir" ++model.batch_size="$bs" ++model.gradient_accumulation_steps="$gas"
     fi
 fi

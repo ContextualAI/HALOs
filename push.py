@@ -57,7 +57,11 @@ if __name__ == "__main__":
     print('building policy')
     policy_dtype = getattr(torch, config.model.policy_dtype)
     policy = transformers.AutoModelForCausalLM.from_pretrained(config.model.name_or_path, low_cpu_mem_usage=True, torch_dtype=policy_dtype)
-    policy.resize_token_embeddings(len(tokenizer)) # model being loaded should already be trained with additional tokens for this to be valid
+    # note that models were only resized for csft before saving
+    # important because number of tokens in pretrained tokenizer is different from model.config.vocab_size, 
+    # so resizing at eval will throw an error if not resized before training
+    if config.loss.name == 'csft':
+        policy.resize_token_embeddings(len(tokenizer)) # model being loaded should already be trained with additional tokens for this to be valid
 
     state_dict = torch.load(os.path.join(config.cache_dir, config.saved_policy), map_location='cpu')
     step, metrics = state_dict['step_idx'], state_dict['metrics']

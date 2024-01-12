@@ -50,7 +50,7 @@ LOSSES = {
         'label' : 'CSFT'
     },
     'ppo': {
-        'label' : 'PPO (offline)'
+        'label' : 'offline PPO'
     }, 
     'dpo' : {
         'label' : 'DPO',
@@ -114,7 +114,7 @@ def process_fracdata(fn='results.jsonl'):
     return results
 
 
-def plot_policy_lengths(model, losses):
+def plot_policy_lengths(model, losses, fn):
     results = process_archangel()
     # Plotting the histogram
     plt.figure(figsize=(10, 6))
@@ -128,7 +128,7 @@ def plot_policy_lengths(model, losses):
     plt.ylabel(f"Output Lengths ({MODELS[model]['label']})")
 
     # Adding legend
-    plt.savefig(f'figures/{model}_lengths.png')
+    plt.savefig(f'figures/{fn}.png')
 
 
 def plot_model_winrates(losses, fn, confidence=0.90):

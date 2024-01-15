@@ -163,7 +163,7 @@ def plot_model_winrates(losses, fn, confidence=0.90):
 
     # Add labels and title
     plt.ylabel('Win Rate - 0.5', fontsize=16)
-    plt.title('Does the aligned model beat the human-chosen response?', fontsize=20)
+    plt.title('Does the aligned model beat the SFT target?', fontsize=20)
     plt.xticks([pos + bar_width / (len(MODELS) - 1) for pos in positions], [ LOSSES[l]['label'] for l in losses ], fontsize=14)
 
     ax.legend(handles=[Patch(facecolor=red_palette[3], label='pythia-{1.4B, 2.8B, 6.9B, 12.0B}'),
@@ -174,7 +174,7 @@ def plot_model_winrates(losses, fn, confidence=0.90):
     plt.savefig(f'figures/{fn}.png')
 
 
-def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.75):
+def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.90):
     results_fracdata = process_fracdata()
     results_archangel = process_archangel()
 
@@ -217,7 +217,7 @@ def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.75):
    
     ax1.set_ylim([0.2, 0.5])
     ax2.set_ylim([0.2, 0.5])
-    fig.suptitle('Winrate (KTO-Aligned Llama7B vs. Human-Chosen Response)') 
+    fig.suptitle('Winrate (KTO-Aligned Llama7B vs. SFT Target)') 
     plt.tight_layout()
     # Adding legend
     plt.savefig(f'figures/fracdata.png')

@@ -36,6 +36,7 @@ import numpy as np
 import re
 import time
 import signal
+import pandas as pd
 from dataclasses import dataclass
 from scipy.stats import binomtest, binom
 from math import ceil, floor
@@ -61,6 +62,7 @@ parser.add_argument('--max_comp', '-mc', help="maximum number of comparisons to 
 parser.add_argument('--verbose', '-v', help="detailed outputs", type=bool, default=True)
 parser.add_argument('--results_file', '-r', help="JSONL file to append to", type=str, default='results.jsonl')
 parser.add_argument('--judge', '-j', help="version of GPT-4 used as judge", type=str, default='gpt-4-0613')
+parser.add_argument('--save_csv', '-csv', help="where to save a CSV of individual judgments (don't save if empty string)", type=str, default='')
 
 
 class APITimeoutException(Exception):
@@ -222,6 +224,7 @@ if __name__ == "__main__":
     i = 0
     lengths = defaultdict(list)
     wins = defaultdict(lambda: 0)
+    individual_judgments = []
 
     for batch in samples["samples"]:
         if args.max_comp is not None and i >= args.max_comp:
@@ -239,6 +242,24 @@ if __name__ == "__main__":
         
         if args.verbose:
             print(wins, 'of', i, { k: np.mean(lengths[k]) for k in lengths })
+
+        # save individual judgments
+        if args.save_csv:
+            if random.random() > 0.5:
+                src_A, src_B = args.candidate_key, args.baseline_key
+                response_A, response_B = batch[args.candidate_key], batch[args.baseline_key]
+            else:
+                src_B, src_A = args.candidate_key, args.baseline_key
+                response_B, response_A = batch[args.candidate_key], batch[args.baseline_key]
+                                    
+            individual_judgments.append({
+                'input' : batch[args.history_key].strip(),
+                'src_B' : src_B,
+                'src_A' : src_A,
+                'response_A': response_A.strip(),
+                'response_B': response_B.strip(),
+                'gpt4_choice' : ('A' if src_A == choice else 'B')
+            })
     
     results = {
         'date': str(datetime.now()),
@@ -263,4 +284,5 @@ if __name__ == "__main__":
         json.dump(results, f)
         f.write('\n')
 
-    print(wins)
+    if args.save_csv:
+        pd.DataFrame.from_dict(individual_judgments).to_csv(args.save_csv)

@@ -65,7 +65,7 @@ LOSSES = {
         'label' : 'SFT+CSFT'
     },
     'sft+ppo': {
-        'label' : 'SFT+PPO (offline)'
+        'label' : 'SFT+offline PPO'
     }, 
     'sft+dpo' : {
         'label' : 'SFT+DPO',
@@ -117,16 +117,16 @@ def process_fracdata(fn='results.jsonl'):
 def plot_policy_lengths(model, losses, fn):
     results = process_archangel()
     # Plotting the histogram
-    plt.figure(figsize=(10, 6))
+    plt.figure(figsize=(12, 6))
 
     data = [ results[l][model]['candidate']['lengths'] for l in losses ]
     plt.boxplot(data, vert=True, patch_artist=True)
 
     # Add labels and title
-    plt.xticks([i+1 for i in range(len(losses))], [ LOSSES[l]['label'] for l in losses])
-    plt.xlabel('Method')
-    plt.ylabel(f"Output Lengths ({MODELS[model]['label']})")
+    plt.xticks([i+1 for i in range(len(losses))], [ LOSSES[l]['label'] for l in losses], fontsize=18)
+    plt.ylabel(f"Output Lengths ({MODELS[model]['label']})", fontsize=20)
 
+    plt.tight_layout()
     # Adding legend
     plt.savefig(f'figures/{fn}.png')
 
@@ -134,7 +134,7 @@ def plot_policy_lengths(model, losses, fn):
 def plot_model_winrates(losses, fn, confidence=0.90):
     results = process_archangel()
     # Plotting the histogram
-    fig, ax = plt.subplots(figsize=(10, 6))
+    fig, ax = plt.subplots(figsize=(18, 6))
     # Set the bar width
     bar_width = 0.1
     
@@ -162,9 +162,9 @@ def plot_model_winrates(losses, fn, confidence=0.90):
             )
 
     # Add labels and title
-    plt.ylabel('Win Rate - 0.5', fontsize=16)
+    plt.ylabel('Win Rate - 0.5', fontsize=18)
     plt.title('Does the aligned model beat the SFT target?', fontsize=20)
-    plt.xticks([pos + bar_width / (len(MODELS) - 1) for pos in positions], [ LOSSES[l]['label'] for l in losses ], fontsize=14)
+    plt.xticks([pos + bar_width / (len(MODELS) - 1) for pos in positions], [ LOSSES[l]['label'] for l in losses ], fontsize=18)
 
     ax.legend(handles=[Patch(facecolor=red_palette[3], label='pythia-{1.4B, 2.8B, 6.9B, 12.0B}'),
                        Patch(facecolor=blue_palette[3], label='llama-{7B, 13B, 30B}')], loc='best', fontsize=14)
@@ -178,7 +178,7 @@ def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.90):
     results_fracdata = process_fracdata()
     results_archangel = process_archangel()
 
-    frac = [0.01, 0.1, 0.25, 0.5, 1.0]
+    frac = [0.01, 0.05, 0.1, 0.25, 0.5, 1.0]
     winrates_des, ci_des = [], []
     winrates_und, ci_und = [], []
 
@@ -205,19 +205,18 @@ def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.90):
 
     dpo_winrate = (results_archangel['dpo'][model]['candidate']['wins'] / results_archangel['dpo'][model]['total'])
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 4))
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(8, 4), sharey=True)
     ax1.plot(frac, winrates_des, linestyle='dotted', marker='o', color='r')
     ax1.axhline(y=dpo_winrate, color='k', linestyle='--')
-    ax1.text(0.7, dpo_winrate - 0.02, 'DPO-Aligned Llama7B', color='k', ha='center')
     ax1.set_xlabel('Fraction of Desirable Data Kept')
     ax2.plot(frac, winrates_und, linestyle='dotted', marker='o', color='b', label='Desirable Fraction')
     ax2.axhline(y=dpo_winrate, color='k', linestyle='--')
-    ax2.text(0.7, dpo_winrate - 0.02, 'DPO-Aligned Llama7B', color='k', ha='center')
+    ax2.text(0.6, dpo_winrate - 0.02, 'DPO-Aligned Llama7B', color='k', ha='center')
     ax2.set_xlabel('Fraction of Undesirable Data Kept')
    
     ax1.set_ylim([0.2, 0.5])
-    ax2.set_ylim([0.2, 0.5])
     fig.suptitle('Winrate (KTO-Aligned Llama7B vs. SFT Target)') 
+
     plt.tight_layout()
     # Adding legend
     plt.savefig(f'figures/fracdata.png')

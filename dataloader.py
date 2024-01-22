@@ -30,6 +30,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from utils import rank0_print, on_rank0, delete_dict
 import pandas as pd
+import numpy as np
 
 
 @dataclass
@@ -847,6 +848,31 @@ class UnpairedPreferenceDataLoader(DataLoader):
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
                 done = True
                 break
+
+
+class UnaryDataLoader(UnpairedPreferenceDataLoader):
+    def get_flat_data(self, prompts):
+        """
+        Return a flat list of examples given a list of prompts that index self.full_data.
+        """
+        flat_data = []
+        prev_status = 'rejected'
+
+        for prompt in prompts:
+            example = self.full_data[prompt]
+
+            if self.max_prompt_count:
+                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+
+            # for oasst, lower scores are better, so rank 0 is the best response and rank n is the worst
+            if prev_status == 'rejected':
+                flat_data.append((example, example.generations[np.argmin(example.scores)], 'chosen'))
+            else:
+                flat_data.append((example, example.generations[np.argmax(example.scores)], 'rejected'))
+
+            prev_status = flat_data[-1][-1]
+
+        return flat_data
 
 
 class PairedPreferenceDataLoader(DataLoader):

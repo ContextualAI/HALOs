@@ -15,6 +15,8 @@ For calculating the batch metrics (e.g., accuracy of predicted preference direct
     python eval.py --config-path=/data/models/archangel/archangel_sft_pythia1-4b ++mode=eval
 
 To sample from the unaligned model (e.g., the original EleutherAI/pythia1-4b), add ++saved_policy=null to the command.
+
+To sample from every prompt (without limit), set ++n_samples=null
 """
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True

@@ -1,0 +1,6 @@
+defaults:
+  - base_model
+
+name_or_path: HuggingFaceH4/mistral-7b-sft-beta
+block_name: MistralDecoderLayer
+use_flash_attention: true

@@ -850,10 +850,11 @@ class UnpairedPreferenceDataLoader(DataLoader):
                 break
 
 
-class UnaryDataLoader(UnpairedPreferenceDataLoader):
+class ScoreUnaryDataLoader(UnpairedPreferenceDataLoader):
     def get_flat_data(self, prompts):
         """
         Return a flat list of examples given a list of prompts that index self.full_data.
+        Assumes that there are a list of scores.
         """
         flat_data = []
         prev_status = 'rejected'
@@ -871,6 +872,38 @@ class UnaryDataLoader(UnpairedPreferenceDataLoader):
                 flat_data.append((example, example.generations[np.argmax(example.scores)], 'rejected'))
 
             prev_status = flat_data[-1][-1]
+
+        return flat_data
+
+
+class PrefUnaryDataLoader(UnpairedPreferenceDataLoader):
+    """
+    Dataloader for training on only one output per input.
+    This throws out at least half the data (more than half if there are multiple pairs per input).
+    For this reason, this should ONLY be used for training.
+    """
+    def get_flat_data(self, prompts):
+        """
+        Return a flat list of examples given a list of prompts that index self.full_data.
+        Only use one preference pair per input.
+        """
+        flat_data = []
+        prev_status = 'rejected'
+
+        for prompt in prompts:
+            example = self.full_data[prompt]
+
+            if self.max_prompt_count:
+                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+
+            for i,j in example.pairs:
+                if prev_status == 'rejected':
+                    flat_data.append((example, example.generations[i], 'chosen'))
+                else:
+                    flat_data.append((example, example.generations[j], 'rejected'))
+
+                prev_status = flat_data[-1][-1]
+                break # only use one pair
 
         return flat_data
 

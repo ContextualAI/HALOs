@@ -65,17 +65,7 @@ What should we do?
       If generation y ~ p_rejected, , where x' ~ are the examples with chosen generations, we have the 'rejected' loss:
           L(x, y) := 1 - sigmoid(beta * KL(p_policy(y_chosen|x') || p_reference(y_chosen|x')) - [log p_policy(y|x) - log p_reference(y|x)])
       """
-      chosen_KL = (policy_chosen_logps - reference_chosen_logps).mean().clamp(min=0)
-      rejected_KL = (policy_rejected_logps - reference_rejected_logps).mean().clamp(min=0)
-
-      chosen_logratios = (policy_chosen_logps - reference_chosen_logps)
-      rejected_logratios = (policy_rejected_logps - reference_rejected_logps)
-
-      losses = torch.cat((1 - F.sigmoid(self.config.loss.beta * (chosen_logratios - rejected_KL)), 1 - F.sigmoid(self.config.loss.beta * (chosen_KL - rejected_logratios))), 0)
-
-      chosen_rewards = self.config.loss.beta * (policy_chosen_logps - reference_chosen_logps).detach()
-      rejected_rewards = self.config.loss.beta * (policy_rejected_logps - reference_rejected_logps).detach()
-
+      # your implementation goes here
       return losses, chosen_rewards, rejected_rewards
    ```
 

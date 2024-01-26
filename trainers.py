@@ -273,9 +273,12 @@ class BasicTrainer(object):
         }
         return results
 
-    def sample(self) -> List[Dict[str, str]]:
+    def sample(self, include_original_prompt=False) -> List[Dict[str, str]]:
         """
         Generate samples from the policy model.
+        
+        Args:
+            include_original_prompt: whether to include the original prompt among the generated text
 
         Returns:
             A list of samples, each of which is of the form:
@@ -285,7 +288,7 @@ class BasicTrainer(object):
                 'policy': the generation from the policy model
             }
         """
-        all_policy_samples, all_prompts, all_chosen = [], [], []
+        all_policy_samples, all_prompts, all_chosen, all_original_prompts = [], [], [], []
         samples = []
 
         self.policy.eval()
@@ -306,6 +309,7 @@ class BasicTrainer(object):
                 chosen_samples.append(x)
 
             all_prompts.extend(eval_batch['prompt_text'])
+            all_original_prompts.extend(eval_batch['original_prompt'])
             all_chosen.extend(chosen_samples)
             all_policy_samples.extend(policy_samples)
 
@@ -315,11 +319,19 @@ class BasicTrainer(object):
                 rank0_print(f"Generated {len(all_prompts)} samples ...")
 
         for i in range(len(all_prompts)):
-            samples.append({
-                'prompt' : all_prompts[i],
-                'chosen' : all_chosen[i],
-                'policy' : all_policy_samples[i][len(all_prompts[i]):],
-            })
+            if include_original_prompt:
+                samples.append({
+                    'prompt' : all_prompts[i],
+                    'chosen' : all_chosen[i],
+                    'policy' : all_policy_samples[i][len(all_prompts[i]):], # remove the prompt
+                    'original_prompt' : all_original_prompts[i],
+                })
+            else:
+                samples.append({
+                    'prompt' : all_prompts[i],
+                    'chosen' : all_chosen[i],
+                    'policy' : all_policy_samples[i][len(all_prompts[i]):], # remove the prompt
+                })
 
         return samples
 

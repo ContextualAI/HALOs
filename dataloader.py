@@ -593,6 +593,7 @@ class SFTDataLoader(DataLoader):
                     example.generations[example.sft_index],
                     example.truncation_mode
                 )
+                batch_element['original_prompt'] = example.original_prompt
                 batch.append(batch_element)
 
                 if len(batch) == self.batch_size:

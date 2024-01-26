@@ -162,22 +162,24 @@ def main(config: DictConfig):
             tokenizer,
             split='test',
             batch_size=config.model.eval_batch_size,
+            n_examples=None,
             n_epochs=1,
             **data_iterator_kwargs
         )
 
         trainer = BasicTrainer(tokenizer, config, None, eval_iterator, policy, reference_model=reference_model)
-        samples = trainer.sample() 
+        samples = trainer.sample(include_original_prompt=True) 
+        alpaca_formatted_examples = []
 
         for sample in samples:
-            sample['output'] = sample.pop('policy').strip()
-            sample['reference'] = sample.pop('chosen').strip()
-            example = eval_iterator.full_data[sample.pop('prompt')]
-            sample['dataset'] = example.dataset_name
-            sample['instruction'] = example.original_prompt
+            alpaca_formatted_examples.append({
+                'instruction' : sample['original_prompt'],
+                'output': sample['policy'].strip(),
+                'reference' : sample['chosen'].strip(),
+            })
         
         fn = os.path.join(config.samples_dir, f'alpaca_{config.exp_name}.json')
-        json.dump(samples, open(fn, 'w'), indent=2)
+        json.dump(alpaca_formatted_examples, open(fn, 'w'), indent=2)
     else:
         raise Exception("mode is neither sample nor eval")
 

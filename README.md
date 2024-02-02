@@ -1,7 +1,7 @@
 
 # **H**um**a**n-Centered **Lo**ss Functions (HALOs) :innocent:
 
-This repo allows you to design new **HumAn-centered LOss functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more in our technical report)](assets/report.pdf).
+This repo allows you to design new **Human-Aware Loss Functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more in our technical report)](assets/report.pdf).
 It was used to create Archangel, the largest-ever suite of human-feedback-aligned LLMs, and has been tested at scales from 1B to 30B.
 
 This repo draws from the excellently written [DPO repo](https://github.com/eric-mitchell/direct-preference-optimization) and has preserved many design choices from the original.
@@ -135,7 +135,7 @@ If you find this repo or the technical paper useful in your research, please fee
 ```
 @techreport{ethayarajh2023halos,
   author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
-  title = {Human-Centered Loss Functions (HALOs)},
+  title = {Human-Aware Loss Functions (HALOs)},
   institution = {Contextual AI},
   note = {https://github.com/ContextualAI/HALOs/blob/main/assets/report.pdf},
   year = {2023},

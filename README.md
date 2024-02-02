@@ -1,5 +1,5 @@
 
-# **H**um**a**n-Centered **Lo**ss Functions (HALOs) :innocent:
+# Human-Aware Loss Functions (HALOs) :innocent:
 
 This repo allows you to design new **Human-Aware Loss Functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more in our technical report)](assets/report.pdf).
 It was used to create Archangel, the largest-ever suite of human-feedback-aligned LLMs, and has been tested at scales from 1B to 30B.

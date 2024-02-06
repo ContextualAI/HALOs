@@ -1,4 +1,4 @@
-name: halos
+name: halo
 channels:
   - nvidia/label/cuda-12.1.1
   - nvidia
@@ -46,7 +46,6 @@ dependencies:
       - comm==0.1.4
       - contourpy==1.1.0
       - cycler==0.11.0
-      - datasets==2.12.0
       - debugpy==1.6.7.post1
       - decorator==5.1.1
       - dill==0.3.6
@@ -59,7 +58,6 @@ dependencies:
       - fasttext==0.9.2
       - filelock==3.12.2
       - fire==0.5.0
-      - flash-attn==2.3.3
       - fonttools==4.42.1
       - frozenlist==1.4.0
       - fsspec==2023.6.0
@@ -68,7 +66,6 @@ dependencies:
       - h11==0.14.0
       - httpcore==1.0.2
       - httpx==0.26.0
-      - huggingface-hub==0.16.4
       - hydra-core==1.3.2
       - idna==3.4
       - ipykernel==6.23.1
@@ -135,7 +132,7 @@ dependencies:
       - requests==2.31.0
       - responses==0.18.0
       - rich==13.6.0
-      - safetensors==0.3.2
+      - safetensors>=0.4.1  # safetensors==0.3.2
       - scipy==1.11.2
       - sentencepiece==0.1.99
       - sentry-sdk==1.29.2
@@ -151,12 +148,10 @@ dependencies:
       - tensor-parallel==1.2.4
       - termcolor==2.3.0
       - tiktoken==0.5.1
-      - tokenizers==0.15.0
       - torch==2.1.1
       - tornado==6.3.3
       - tqdm==4.65.0
       - traitlets==5.9.0
-      - transformers==4.35.2
       - triton==2.1.0
       - trl==0.7.2
       - typing-extensions==4.7.1
@@ -167,3 +162,8 @@ dependencies:
       - wcwidth==0.2.6
       - xxhash==3.3.0
       - yarl==1.9.2
+      # - flash-attn==2.3.3
+      - datasets  # - datasets==2.16.1
+      - tokenizers
+      - transformers==4.37.2
+      - huggingface-hub

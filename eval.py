@@ -30,7 +30,7 @@ from omegaconf import OmegaConf, DictConfig
 import json
 import socket
 from typing import Optional, Set
-from trainers import BasicTrainer
+from trainers import BasicTrainer, DPOTrainer
 import dataloader
 from datetime import datetime
 
@@ -83,7 +83,10 @@ def main(config: DictConfig):
         reference_model_dtype = getattr(torch, config.model.reference_dtype)
         reference_model = transformers.AutoModelForCausalLM.from_pretrained(
             config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, torch_dtype=reference_model_dtype, **model_kwargs)
-        reference_model.resize_token_embeddings(len(tokenizer))
+        
+        if config.loss.name == 'ppo':
+            reference_model.resize_token_embeddings(len(tokenizer))
+            
         disable_dropout(reference_model)
 
         if config.model.load_from is not None:
@@ -150,7 +153,7 @@ def main(config: DictConfig):
             **data_iterator_kwargs
         )
 
-        trainer = BasicTrainer(tokenizer, config, None, eval_iterator, policy, reference_model=reference_model)
+        trainer = DPOTrainer(tokenizer, config, None, eval_iterator, policy, reference_model=reference_model)
         results = trainer.eval() 
         rank0_print(results)
     elif config.mode == 'alpacaeval':

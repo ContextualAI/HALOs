@@ -47,6 +47,7 @@ class Example:
     truncation_mode: str = 'keep_end'                           # if truncation needed, keep the beginning (keep_start) or end (keep_end) (only override default for SHP)
     dataset_name: str = ''
     original_prompt: str = ''                                   # the unformatted prompt (needed to recover instruction for AlpacaEval)
+    additional_generation: List[Tuple[float, str]] = field(default_factory=list)  # additional (scores, generations) to be used for training (e.g. ranked dpo pairs)
 
     def num_generations(self):
         return len(self.generations)
@@ -58,6 +59,7 @@ class Example:
         clean = lambda x: re.sub(r'[ \t]{2,}', ' ', x)
         self.prompt = clean(self.prompt)
         self.generations = list(map(clean, self.generations))
+        self.additional_generation = list(map(clean, self.additional_generation))
 
 
 class Dataset:
@@ -123,6 +125,115 @@ def get_alpacaeval(split: str, human_prefix: str, human_suffix: str, assistant_p
 
     return data
 
+def extract_content(row):
+    for content in row:
+        if content['role'] == 'user': continue
+        else: return content['content']
+    return None
+
+def get_sorted_generations(row):
+    # have ranks, need to sort the generations based on magnitude of ranks
+    ranks = row['all_rm_scores']
+    generations = row['all_generated_responses']
+    sorted_generations = [x for _, x in sorted(zip(ranks, generations))]
+    return sorted_generations
+
+def filter_row(row, exclude_list=[]):
+    # exclude list is a list of string generations, i.e. the chosen and rejected generations
+    ranks = row['all_rm_scores']
+    generations = row['all_generated_responses']
+    sorted_generations = list(sorted(zip(ranks, generations)))
+    keep_list = [x for x in sorted_generations if x[1] not in exclude_list]
+    return keep_list
+
+def get_snorkel_pairrm_iter3(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
+    """
+    Load the Snorkel Mistral PairRM DPO dataset with 5 generations rankings and convert it into to a dictionary of Examples. 
+    This is used to train snorkelai/Snorkel-Mistral-PairRM-DPO via 3 iterations. This is train/test_iteration_3.
+
+    Args:
+        - split: must be 'test'; otherwise error will be thrown
+        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of assistant turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_suffix: marks end of assistant turn ('' is the recommended choice and is set in config.yaml)
+
+    Returns:   
+        A Dataset instance.
+    """
+    if split == 'train': split = 'train_iteration_3'
+    elif split == 'test': split = 'test_iteration_3'
+    else: raise ValueError('snorkelai/Snorkel-Mistral-PairRM-DPO-Dataset requires split to be [train_iteration_3, test_iteration_3]')
+
+    rank0_print(f'Loading Snorkel PairRM ranked DPO dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('snorkelai/Snorkel-Mistral-PairRM-DPO-Dataset', split=split)
+    if on_rank0():
+        dataset = tqdm.tqdm(dataset, desc='Processing Snorkel PairRM DPO Split #3')
+
+    data = Dataset('snorkel_dpo_pairrm_iter3')
+    for row in dataset:
+        prompt = human_prefix + row['prompt'] + human_suffix + assistant_prefix
+        chosen = extract_content(row['chosen']) # [-1]['content']
+        rejected = extract_content(row['rejected']) # [-1]['content']
+        # filtered_row = filter_row(row, [chosen, rejected])
+        responses = [chosen + assistant_suffix, rejected + assistant_suffix]
+        scores = [max(row['all_rm_scores']), min(row['all_rm_scores'])]
+        i, j = data[prompt].num_generations(), data[prompt].num_generations() + 1
+        data[prompt].pairs.append((i, j))
+        data[prompt].scores.extend(scores)
+        data[prompt].prompt = prompt
+        data[prompt].generations.extend(responses)
+        data[prompt].dataset_name = 'snorkel_dpo_pairrm_iter3'
+        # keep original prompt so that it can be dumped into a JSON file before running the alpacaeval command
+        data[prompt].original_prompt = row['prompt']
+        data[prompt].remove_extra_spaces()
+
+    return data
+
+def get_snorkel_pairrm_iter2(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
+    """
+    Load the Snorkel Mistral PairRM DPO dataset with 5 generations rankings and convert it into to a dictionary of Examples. 
+    This is used to train snorkelai/Snorkel-Mistral-PairRM-DPO via 3 iterations. This is train/test_iteration_2.
+
+    Args:
+        - split: must be 'test'; otherwise error will be thrown
+        - human_prefix: marks start of human turn ('\n\nHuman:' is the recommended choice and is set in config.yaml)
+        - human_suffix: marks end of human turn ('' is the recommended choice and is set in config.yaml)
+        - assistant_prefix: marks start of assistant turn ('\n\nAssistant:' is the recommended choice and is set in config.yaml)
+        - assistant_suffix: marks end of assistant turn ('' is the recommended choice and is set in config.yaml)
+
+    Returns:   
+        A Dataset instance.
+    """
+    if split == 'train': split = 'train_iteration_2'
+    elif split == 'test': split = 'test_iteration_2'
+    else: raise ValueError('snorkelai/Snorkel-Mistral-PairRM-DPO-Dataset requires split to be [train_iteration_2, test_iteration_2]')
+
+    rank0_print(f'Loading Snorkel PairRM ranked DPO dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('snorkelai/Snorkel-Mistral-PairRM-DPO-Dataset', split=split)
+    if on_rank0():
+        dataset = tqdm.tqdm(dataset, desc='Processing Snorkel PairRM DPO Split #2')
+
+    data = Dataset('snorkel_dpo_pairrm_iter2')
+    for row in dataset:
+        prompt = human_prefix + row['prompt'] + human_suffix + assistant_prefix
+        chosen = extract_content(row['chosen']) # [-1]['content']
+        rejected = extract_content(row['rejected']) # [-1]['content']
+        # filtered_row = filter_row(row, [chosen, rejected])
+        responses = [chosen + assistant_suffix, rejected + assistant_suffix]
+        scores = [max(row['all_rm_scores']), min(row['all_rm_scores'])]
+        i, j = data[prompt].num_generations(), data[prompt].num_generations() + 1
+        data[prompt].pairs.append((i, j))
+        data[prompt].scores.extend(scores)
+        data[prompt].prompt = prompt
+        data[prompt].generations.extend(responses)
+        data[prompt].dataset_name = 'snorkel_dpo_pairrm_iter2'
+        # keep original prompt so that it can be dumped into a JSON file before running the alpacaeval command
+        data[prompt].original_prompt = row['prompt']
+        data[prompt].remove_extra_spaces()
+
+    return data
+
 
 def get_snorkel_pairrm_iter1(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
     """
@@ -147,27 +258,6 @@ def get_snorkel_pairrm_iter1(split: str, human_prefix: str, human_suffix: str, a
     dataset = datasets.load_dataset('snorkelai/Snorkel-Mistral-PairRM-DPO-Dataset', split=split)
     if on_rank0():
         dataset = tqdm.tqdm(dataset, desc='Processing Snorkel PairRM DPO Split #1')
-
-    def extract_content(row):
-        for content in row:
-            if content['role'] == 'user': continue
-            else: return content['content']
-        return None
-
-    def get_sorted_generations(row):
-        # have ranks, need to sort the generations based on magnitude of ranks
-        ranks = row['all_rm_scores']
-        generations = row['all_generated_responses']
-        sorted_generations = [x for _, x in sorted(zip(ranks, generations))]
-        return sorted_generations
-    
-    def filter_row(row, exclude_list=[]):
-        # exclude list is a list of string generations, i.e. the chosen and rejected generations
-        ranks = row['all_rm_scores']
-        generations = row['all_generated_responses']
-        sorted_generations = list(sorted(zip(ranks, generations)))
-        keep_list = [x for x in sorted_generations if x[1] not in exclude_list]
-        return keep_list
 
     data = Dataset('snorkel_dpo_pairrm_iter1')
     for row in dataset:

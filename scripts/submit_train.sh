@@ -1,7 +1,7 @@
 # cd /home/winnie/core_cp/experimental/dpo
 yi_cfg="--config-name config_yi34"
 script="launch_train.sh"
-betas=(0.3 0.1)
+betas=(0.1 0.3)
 argslist=(
     # "$yi_cfg loss=kto model=yi_llama34b datasets=[shp2] exp_name=kto_yi34_yifmt_shp2 mode=train ++cache_dir=/data/models/yi34_kto ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
     # "$yi_cfg loss=kto model=yi34b_chat datasets=[shp,hh,oasst] mode=train ++cache_dir=/data/models/yi34_kto ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
@@ -12,19 +12,20 @@ argslist=(
     # "$yi_cfg loss=kto model=yi34b_chat datasets=[orca_dpo_pairs] mode=train ++cache_dir=/data/models/yi34_kto ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
     # "$yi_cfg loss=kto model=yi34b_chat datasets=[ultrabin] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
     # ------ manually reset eos token && id -------
-    # "$yi_cfg loss=kto model=yi34b_chat datasets=[ultrabin,oasst] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
+   # "$yi_cfg loss=kto model=yi34b_chat datasets=[ultrabin,oasst] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
     # "$yi_cfg loss=kto model=yi34b_chat datasets=[orca_dpo] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
-    "$yi_cfg loss=kto model=yi34b_chat datasets=[distilabel_orca_argilla_filter] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
-    "$yi_cfg loss=kto model=yi34b_chat datasets=[distilabel_orca_steamshp_filter] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
+    # "$yi_cfg loss=kto model=yi34b_chat datasets=[distilabel_orca_argilla_filter] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
+    # "$yi_cfg loss=kto model=yi34b_chat datasets=[distilabel_orca_steamshp_filter] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
     # "$yi_cfg loss=kto model=yi34b_chat datasets=[ultrabin] mode=train ++cache_dir=/data/models/yi34_kto_neweos ++model.use_fast_tokenizer=false ++model.batch_size=16 ++model.gradient_accumulation_steps=2"
-    # ------- dpo pairrm 02/12 ---------
-    "loss=dpo model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter1] mode=train ++cache_dir=/data/models/yi34_dpo_pairrm ++model.use_fast_tokenizer=false"
-    "loss=kto model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter1] mode=train ++cache_dir=/data/models/yi34_kto_pairrm ++model.use_fast_tokenizer=false"
-    # --- TODO Set the sft model to be the previous iteration's model by looking at the dataset name. If it's *_iter2 then set sft_model to *_iter1 and then train on it ----
-    # "loss=dpo model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter2] mode=train ++cache_dir=/data/models/yi34_dpo_pairrm ++model.use_fast_tokenizer=false ++model.load_from=dpo_mistral7b_instruct_v2_snorkel_pairrm_iter1_b0.3/LATEST/policy.pt"
-    # "loss=kto model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter2] mode=train ++cache_dir=/data/models/yi34_kto_pairrm ++model.use_fast_tokenizer=false ++model.load_from=kto_mistral7b_instruct_v2_snorkel_pairrm_iter1_b0.3/LATEST/policy.pt"
-    # "loss=dpo model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter3] mode=train ++cache_dir=/data/models/yi34_dpo_pairrm ++model.use_fast_tokenizer=false ++model.load_from=dpo_mistral7b_instruct_v2_snorkel_pairrm_iter2_b0.3/LATEST/policy.pt"
-    # "loss=kto model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter3] mode=train ++cache_dir=/data/models/yi34_kto_pairrm ++model.use_fast_tokenizer=false ++model.load_from=kto_mistral7b_instruct_v2_snorkel_pairrm_iter2_b0.3/LATEST/policy.pt"
+    # ------- dpo pairrm 02/12 ----- NOTE: must use ++model.load_fron=/path/to/model----
+    # "loss=dpo model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter1] mode=train ++cache_dir=/data/models/yi34_dpo_pairrm ++model.use_fast_tokenizer=false"
+    # "loss=kto model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter1] mode=train ++cache_dir=/data/models/yi34_kto_pairrm ++model.use_fast_tokenizer=false"
+    # --- 02/13: Set the sft model to be the previous iteration's model by looking at the dataset name. If it's *_iter2 then set sft_model to *_iter1 and then train on it ----
+    # "loss=dpo model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter2] mode=train ++cache_dir=/data/models/yi34_dpo_pairrm ++model.use_fast_tokenizer=false" #  ++model.load_from=dpo_mistral7b_instruct_v2_snorkel_pairrm_iter1_b0.3/LATEST/policy.pt"
+    # "loss=kto model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter2] mode=train ++cache_dir=/data/models/yi34_kto_pairrm ++model.use_fast_tokenizer=false" #  ++model.load_from=kto_mistral7b_instruct_v2_snorkel_pairrm_iter1_b0.1/LATEST/policy.pt"
+    # --- 02/13: set to the last stage. Note the DPO 0.3 had some issues.
+    # "loss=dpo model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter3] mode=train ++cache_dir=/data/models/yi34_dpo_pairrm ++model.use_fast_tokenizer=false" #  ++model.load_from=dpo_mistral7b_instruct_v2_snorkel_pairrm_iter2_b0.3/LATEST/policy.pt"
+    "loss=kto model=mistral7b_instruct_v2 datasets=[snorkel_pairrm_iter3] mode=train ++cache_dir=/data/models/yi34_kto_pairrm ++model.use_fast_tokenizer=false" #  ++model.load_from=kto_mistral7b_instruct_v2_snorkel_pairrm_iter2_b0.1/LATEST/policy.pt"
 )
 
 for args in "${argslist[@]}"; do
@@ -47,7 +48,14 @@ for args in "${argslist[@]}"; do
         job_name="${loss}_${model}_${datasets}_b${beta}"
         echo "job_name: $job_name"
 
-        # echo sbatch -D `pwd` --job-name=$job_name --output=./outputs/$job_name.out --export=loss=$loss,model=$model ./scripts/launch_kto_yi34.sh "${args} exp_name=$job_name ++loss.beta=$beta"
-        sbatch -D `pwd` --job-name=$job_name --output=./outputs/$job_name.out --export=loss=$loss,model=$model ./scripts/${script} "${args} exp_name=$job_name ++loss.beta=$beta"
+        # if the args has iter2 or iter3, then set the load_from argument
+        if [[ $args == *"iter2"* ]]; then
+            load_from="++model.load_from=${loss}_${model}_snorkel_pairrm_iter1_b${beta}/LATEST/policy.pt"  # CHANGE ME
+        elif [[ $args == *"iter3"* ]]; then
+            load_from="++model.load_from=${loss}_${model}_snorkel_pairrm_iter2_b${beta}/LATEST/policy.pt"  # CHANGE ME
+        else
+            load_from=null
+        fi
+        sbatch -D `pwd` --job-name=$job_name --output=./outputs/$job_name.out --export=loss=$loss,model=$model ./scripts/${script} "${args} exp_name=$job_name ++loss.beta=$beta ${load_from}"
     done
 done

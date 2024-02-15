@@ -1,0 +1,5 @@
+defaults:
+  - base_model
+
+name_or_path: mistralai/Mistral-7B-Instruct-v0.2
+block_name: MistralDecoderLayer

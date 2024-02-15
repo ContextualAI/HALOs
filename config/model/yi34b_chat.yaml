@@ -1,0 +1,7 @@
+defaults:
+  - base_model
+
+name_or_path: 01-ai/Yi-34B-Chat
+block_name: LlamaDecoderLayer
+
+use_fast_tokenizer: false

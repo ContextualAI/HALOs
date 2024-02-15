@@ -45,3 +45,4 @@ gradient_accumulation_steps: 1
 eval_batch_size: 16
 
 use_flash_attention: false
+attn_implementation: eager  # spda for transformers > 2.35.2

@@ -3,4 +3,4 @@ defaults:
 
 name_or_path: huggyllama/llama-7b
 block_name: LlamaDecoderLayer
-use_flash_attention: true
+# use_flash_attention: true

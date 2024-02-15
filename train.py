@@ -131,12 +131,14 @@ def main(config: DictConfig):
     model_class = AutoModelForCausalLMWithValueHead if config.loss.name == 'ppo' else AutoModelForCausalLM
     policy = model_class.from_pretrained(
         config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, **policy_kwargs)
+        # config.model.name_or_path, low_cpu_mem_usage=True, attn_implementation=config.model.attn_implementation, **policy_kwargs)
     disable_dropout(policy)
 
     if config.loss.use_reference_model:
         print('building reference model')
         reference_model = AutoModelForCausalLM.from_pretrained(
-            config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, **reference_kwargs)
+        config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, **policy_kwargs)
+            # config.model.name_or_path, low_cpu_mem_usage=True, attn_implementation=config.model.attn_implementation, **reference_kwargs)
         disable_dropout(reference_model)
     else:
         reference_model = None
@@ -166,6 +168,10 @@ def main(config: DictConfig):
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
+    if tokenizer.eos_token == '<|endoftext|>':  # used for chat models
+        tokenizer.eos_token = '<|im_end|>'
+        tokenizer.eos_token_id = tokenizer.convert_tokens_to_ids(tokenizer.eos_token)
+        print(f'replacing tokenizer eos_token to <|im_end|>, check: {tokenizer.eos_token}')
 
     # add special tokens
     special_tokens = [ config.loss.chosen_control_token, config.loss.rejected_control_token ] if config.loss.name == 'csft' else []

@@ -73,7 +73,15 @@ def main(config: DictConfig):
 
     # saved policy can be force set to null to sample from pretrained model
     if config.saved_policy is not None:
-        state_dict = torch.load(os.path.join(config.cache_dir, config.saved_policy), map_location='cpu')
+        saved_policy = os.path.join(config.cache_dir, config.saved_policy)
+        # extract the last folder in the saved_policy path from the file
+        if not os.path.exists(saved_policy):
+            print(f'Could not find saved policy at {saved_policy}, checking 1 directory up...')
+            directory = os.path.dirname(config.saved_policy)
+            filename = os.path.basename(config.saved_policy)
+            saved_policy = os.path.join(config.cache_dir, directory, '..', filename)
+            print(f'new saved_policy: {saved_policy}')
+        state_dict = torch.load(saved_policy, map_location='cpu')
         step, metrics = state_dict['step_idx'], state_dict['metrics']
         print(f'loading pre-trained weights for policy at step {step} from {config.saved_policy} with metrics {json.dumps(metrics, indent=2)}')
         policy.load_state_dict(state_dict['state'])

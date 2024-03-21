@@ -451,7 +451,9 @@ class BasicTrainer(object):
                 rank0_print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
     def clip_gradient(self):
-        """Clip the gradient norm of the parameters of a non-FSDP policy."""
+        """Clip the gradient norm of the parameters."""
+        if self.fsdp:
+            return self.policy.clip_grad_norm_(self.config.model.max_grad_norm).item()
         return torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm).item()
 
     def write_state_dict(self, step: int, state: Dict[str, torch.Tensor], metrics: Dict, filename: str, dir_name: Optional[str] = None):

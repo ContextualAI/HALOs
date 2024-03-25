@@ -1,0 +1,12 @@
+# Direct Preference Optimization
+# DO NOT USE dpo-sigmoid in practice: this is just for understanding the importance of convexity in the loss regime
+name: dpo-logsigmoid
+
+# the temperature parameter for DPO; lower values mean we care less about the reference model
+beta: 0.1
+
+trainer: DPOTrainer
+
+dataloader: PairedPreferenceDataLoader
+
+use_reference_model: true

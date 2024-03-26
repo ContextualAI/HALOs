@@ -34,7 +34,16 @@ What should we do?
    
     `conda activate halos`
 
-2. Determine whether you need a new dataset. If you have a dataset called `foo`, add a function called `get_foo` to `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where the prefixes and suffixes determine how the dataset is formatted (see `config.yaml`) and `split` should be either `train` or `test`:
+   If you can't create a conda environment, or you face some issue during installtion, try doing
+   ```
+   conda create -n halos3 python=3.10.12
+   pip3 install numpy==1.24.3 ninja==1.11.1.1 packaging==23.1 
+   conda install pytorch==2.1.1 pytorch-cuda=12.1 -c pytorch -c nvidia
+   pip3 install flash-attn==2.3.3 
+   pip3 install transformers==4.35.2 datasets hydra-core==1.3.2 wandb==0.15.3 openai==1.6.1 accelerate==0.21.0 tensor-parallel==1.2.4
+   ```
+   
+3. Determine whether you need a new dataset. If you have a dataset called `foo`, add a function called `get_foo` to `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where the prefixes and suffixes determine how the dataset is formatted (see `config.yaml`) and `split` should be either `train` or `test`:
 
     ```def get_foo(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:```
 

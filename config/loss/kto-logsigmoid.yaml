@@ -1,0 +1,18 @@
+# Kahneman-Tversky Optimization with a log sigmoid term on the outside
+# DO NOT USE kto-logsigmoid in practice: this is just for understanding the importance of convexity in the loss regime
+name: kto-logsigmoid
+
+# the temperature parameter for KTO; lower values mean we care less about the reference model
+beta: 0.1
+
+trainer: KTOLogSigmoidTrainer
+
+dataloader: UnpairedPreferenceDataLoader
+
+use_reference_model: true
+
+# how much to weigh the losses of desirable examples (when dataset is imbalanced)
+desirable_weight: 1.0
+
+# how much to weigh the losses of undesirable examples (when dataset is imbalanced)
+undesirable_weight: 1.0

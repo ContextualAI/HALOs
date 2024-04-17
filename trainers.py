@@ -704,6 +704,24 @@ class DPOTrainer(PairedPreferenceTrainer):
         return losses, chosen_rewards, rejected_rewards
 
 
+class DPOSigmoidTrainer(PairedPreferenceTrainer):
+       def loss(self,
+             policy_chosen_logps: torch.FloatTensor,
+             policy_rejected_logps: torch.FloatTensor,
+             reference_chosen_logps: torch.FloatTensor,
+             reference_rejected_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the DPO loss for a batch of policy and reference model log probabilities."""
+        pi_logratios = policy_chosen_logps - policy_rejected_logps
+        ref_logratios = reference_chosen_logps - reference_rejected_logps
+        logits = pi_logratios - ref_logratios
+
+        losses = -F.sigmoid(self.config.loss.beta * logits)
+        chosen_rewards = self.config.loss.beta * (policy_chosen_logps - reference_chosen_logps).detach()
+        rejected_rewards = self.config.loss.beta * (policy_rejected_logps - reference_rejected_logps).detach()
+
+        return losses, chosen_rewards, rejected_rewards
+
+
 class CDPOTrainer(PairedPreferenceTrainer):
        def loss(self,
              policy_chosen_logps: torch.FloatTensor,
@@ -938,6 +956,46 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
         rejected_rewards = self.config.loss.beta * (policy_rejected_logps - reference_rejected_logps).detach()
 
         return losses, chosen_rewards, rejected_rewards
+
+
+class KTOLogSigmoidTrainer(KTOTrainer):
+    def loss(self,
+             policy_chosen_logps: torch.FloatTensor,
+             policy_rejected_logps: torch.FloatTensor,
+             policy_KL_logps: torch.FloatTensor,
+             reference_chosen_logps: torch.FloatTensor,
+             reference_rejected_logps: torch.FloatTensor,
+             reference_KL_logps) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the Kahneman-Tversky loss for a batch of policy and reference model log probabilities,
+        but using a logsigmoid on the outside.
+        """
+        KL = (policy_KL_logps - reference_KL_logps).mean().detach()
+        # nn.all_reduce sums up the KL estimates across all devices (gradient will also be scaled by world size)
+        dist.nn.all_reduce(KL, op=dist.ReduceOp.SUM)
+        # take average (will also scale gradients appropriately)
+        KL = (KL / self.world_size).clamp(min=0)
+
+        if policy_chosen_logps.shape[0] != 0:
+            chosen_logratios = (policy_chosen_logps - reference_chosen_logps)
+            chosen_losses = -F.logsigmoid(self.config.loss.beta * (chosen_logratios - KL))
+            chosen_rewards = self.config.loss.beta * chosen_logratios.detach()
+        else:
+            # important to cast to policy_dtype; otherwise error will occur during all_gather
+            chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.device)
+            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.device)
+        
+        if policy_rejected_logps.shape[0] != 0:
+            rejected_logratios = (policy_rejected_logps - reference_rejected_logps)
+            rejected_losses = -F.logsigmoid(self.config.loss.beta * (KL - rejected_logratios))
+            rejected_rewards = self.config.loss.beta * rejected_logratios.detach()
+        else:
+            # important to cast to policy_dtype; otherwise error will occur during all_gather
+            rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.device)
+            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.device)
+
+        losses = torch.cat((self.config.loss.desirable_weight * chosen_losses, self.config.loss.undesirable_weight * rejected_losses), 0)
+
+        return losses, chosen_rewards, rejected_rewards, KL
 
 
 class PPOTrainer(BasicTrainer):

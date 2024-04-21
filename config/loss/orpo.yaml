@@ -1,0 +1,11 @@
+# odds ratio preference optimization (ORPO)
+name: orpo
+
+# the temperature parameter for DPO; lower values mean we care less about the reference model
+OR_scale: 0.25
+
+trainer: ORPOTrainer
+
+dataloader: PairedPreferenceDataLoader
+
+use_reference_model: false

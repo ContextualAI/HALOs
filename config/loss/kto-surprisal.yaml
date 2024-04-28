@@ -1,14 +1,14 @@
-# Kahneman-Tversky Optimization using the reciprocal of self-information as the reward
-name: kto-info
+# Kahneman-Tversky Optimization using the token-level surprisal as the reward
+name: kto-surprisal
 
 # the temperature parameter for KTO; lower values mean we care less about the reference model
 beta: 0.1
 
-trainer: KTOInfoTrainer
+trainer: KTOSurprisalTrainer
 
 dataloader: UnpairedPreferenceDataLoader
 
-use_reference_model: true
+use_reference_model: false
 
 # how much to weigh the losses of desirable examples (when dataset is imbalanced)
 desirable_weight: 1.0

@@ -952,34 +952,31 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         return losses.mean(), metrics
 
 
-class KTOInfoTrainer(KTOTrainer):
+class KTOSurprisalTrainer(KTOTrainer):
     """
-    Variant of the KTO loss using the reciprocal of the avg self-information (over tokens) as the reward.
+    Variant of the KTO loss using the token-level surprisal as the reward (no reference model).
     """
     def loss(self,
              policy_chosen_logps: torch.FloatTensor,
              policy_rejected_logps: torch.FloatTensor,
-             policy_KL_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        """Compute the Kahneman-Tversky loss for a batch of policy and reference model log probabilities."""
-        KL = (-1/policy_KL_logps).mean().detach()
-        # nn.all_reduce sums up the KL estimates across all devices (gradient will also be scaled by world size)
-        dist.nn.all_reduce(KL, op=dist.ReduceOp.SUM)
-        # take average (will also scale gradients appropriately)
-        KL = (KL / self.world_size) 
+             policy_reference_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the Kahneman-Tversky loss for a batch of token-level log probabilities."""
+        avg_token_surprisal = policy_reference_logps.mean().detach()
+        dist.nn.all_reduce(avg_surprisal, op=dist.ReduceOp.SUM)
+        # take average (will also scale gradients appropriately); op=dist.ReduceOp.MEAN will not
+        avg_token_surprisal = (avg_surprisal / self.world_size)
 
         if policy_chosen_logps.shape[0] != 0:
-            chosen_logratios = -1/policy_chosen_logps
-            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_logratios - KL))
-            chosen_rewards = self.config.loss.beta * chosen_logratios.detach()
+            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (policy_chosen_logps - avg_token_surprisal))
+            chosen_rewards = self.config.loss.beta * policy_chosen_logps.detach()
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.device)
             chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            rejected_logratios = -1/policy_rejected_logps
-            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (KL - rejected_logratios))
-            rejected_rewards = self.config.loss.beta * rejected_logratios.detach()
+            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (avg_token_surprisal - policy_rejected_logps))
+            rejected_rewards = self.config.loss.beta * policy_rejected_logps.detach()
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.device)
@@ -987,19 +984,19 @@ class KTOInfoTrainer(KTOTrainer):
 
         losses = torch.cat((self.config.loss.desirable_weight * chosen_losses, self.config.loss.undesirable_weight * rejected_losses), 0)
 
-        return losses, chosen_rewards, rejected_rewards, KL
+        return losses, chosen_rewards, rejected_rewards
     
     def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str=None):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
         if mode is None: mode = self.config.mode
 
-        policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch, average_log_prob=True)
+        policy_chosen_logps, policy_rejected_logps, policy_reference_logps = self.forward(self.policy, batch, average_log_prob=True)
         
-        losses, chosen_rewards, rejected_rewards, KL = self.loss(
+        losses, chosen_rewards, rejected_rewards = self.loss(
             policy_chosen_logps,
             policy_rejected_logps,
-            policy_KL_logps
+            policy_reference_logps
         )
 
         combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
@@ -1007,7 +1004,6 @@ class KTOInfoTrainer(KTOTrainer):
 
         all_rewards = all_gather_if_needed(combined_rewards, self.rank, self.world_size)
         all_statuses = all_gather_if_needed(combined_statuses, self.rank, self.world_size)
-        all_KL = all_gather_if_needed(KL, self.rank, self.world_size)
         chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
         rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
 
@@ -1016,11 +1012,10 @@ class KTOInfoTrainer(KTOTrainer):
         metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx].float().cpu().numpy().tolist()
         metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx].float().cpu().numpy().tolist()
         metrics[f'rewards_{mode}/margins'] = [(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()]
-        metrics[f'rewards_{mode}/KL_estimate'] = all_KL.float().cpu().numpy().tolist()
         metrics[f'loss/{mode}'] = all_devices_losses.float().cpu().numpy().tolist()
 
-        del policy_chosen_logps, policy_rejected_logps, policy_KL_logps
-        del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_devices_losses, all_KL
+        del policy_chosen_logps, policy_rejected_logps, policy_reference_logps
+        del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_devices_losses
 
         return losses.mean(), metrics
 

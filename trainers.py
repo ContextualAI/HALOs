@@ -962,9 +962,9 @@ class KTOSurprisalTrainer(KTOTrainer):
              policy_reference_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the Kahneman-Tversky loss for a batch of token-level log probabilities."""
         avg_token_surprisal = policy_reference_logps.mean().detach()
-        dist.nn.all_reduce(avg_surprisal, op=dist.ReduceOp.SUM)
+        dist.nn.all_reduce(avg_token_surprisal, op=dist.ReduceOp.SUM)
         # take average (will also scale gradients appropriately); op=dist.ReduceOp.MEAN will not
-        avg_token_surprisal = (avg_surprisal / self.world_size)
+        avg_token_surprisal = (avg_token_surprisal / self.world_size)
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (policy_chosen_logps - avg_token_surprisal))

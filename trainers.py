@@ -872,8 +872,8 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             - average_log_prob: average the log probability across tokens in the output
 
         Returns:
-            chosen_logps: log probabilities of chosen examples (should be batch size / 2 if data was read in correctly)
-            rejected_logps: log probabilities of rejected examples (should be batch size / 2 if data was read in correctly)
+            chosen_logps: log probabilities of chosen examples
+            rejected_logps: log probabilities of rejected examples
             KL_logps: log probabilities of the unmatched y'|x (used to estimate the KL divergence between policy and reference; should be batch size)
         """
         max_length = max(batch['target_combined_input_ids'].shape[1], batch['KL_combined_input_ids'].shape[1])

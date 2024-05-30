@@ -14,6 +14,7 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 from huggingface_hub import hf_hub_download
+from safetensors.torch import load_file as safe_load_file
 from transformers import PreTrainedModel, AutoModelForCausalLM
 
 
@@ -87,20 +88,35 @@ class PreTrainedModelWrapper(nn.Module):
         # state_dict is removed from the model after loading it.
         if isinstance(pretrained_model_name_or_path, str):
             filename = os.path.join(pretrained_model_name_or_path, "pytorch_model.bin")
+            safe_filename = os.path.join(pretrained_model_name_or_path, "model.safetensors")
             sharded_index_filename = os.path.join(pretrained_model_name_or_path, "pytorch_model.bin.index.json")
+            safe_sharded_index_filename = os.path.join(pretrained_model_name_or_path, "model.safetensors.index.json")
             is_shared = False
+            use_safe = os.path.exists(safe_filename)
 
-            if not os.path.exists(filename):
+            if not (os.path.exists(filename) or os.path.exists(safe_filename)):
                 try:
-                    filename = hf_hub_download(pretrained_model_name_or_path, "pytorch_model.bin")
+                    try:
+                        filename = hf_hub_download(pretrained_model_name_or_path, "pytorch_model.bin")
+                    except:
+                        use_safe = True
+                        safe_filename = hf_hub_download(pretrained_model_name_or_path, "model.safetensors")
                 # sharded
                 except:  # noqa
-                    if os.path.exists(sharded_index_filename):
-                        index_file_name = sharded_index_filename
+                    if not use_safe:
+                        if os.path.exists(sharded_index_filename):
+                            index_file_name = sharded_index_filename
+                        else:
+                            index_file_name = hf_hub_download(
+                                pretrained_model_name_or_path, "pytorch_model.bin.index.json"
+                            )
                     else:
-                        index_file_name = hf_hub_download(
-                            pretrained_model_name_or_path, "pytorch_model.bin.index.json"
-                        )
+                        if os.path.exists(safe_sharded_index_filename):
+                            index_file_name = safe_sharded_index_filename
+                        else:
+                            index_file_name = hf_hub_download(
+                                pretrained_model_name_or_path, "model.safetensors.index.json"
+                            )
                     # load json
                     with open(index_file_name, "r") as f:
                         index = json.load(f)
@@ -111,14 +127,17 @@ class PreTrainedModelWrapper(nn.Module):
                             files_to_download.add(v)
                     is_shared = True
 
+            loading_func = safe_load_file if use_safe else torch.load
+            load_kwargs = {} if use_safe else {"map_location": "cpu"}
+
             if is_shared:
                 # download each file and add it to the state_dict
                 state_dict = {}
                 for shard_file in files_to_download:
                     filename = hf_hub_download(pretrained_model_name_or_path, shard_file)
-                    state_dict.update(torch.load(filename, map_location="cpu"))
+                    state_dict.update(loading_func(filename, **load_kwargs))
             else:
-                state_dict = torch.load(filename, map_location="cpu")
+                state_dict = loading_func(filename if not use_safe else safe_filename, **load_kwargs)
 
         else:
             state_dict = pretrained_model_name_or_path.state_dict()

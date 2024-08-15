@@ -23,37 +23,51 @@ Remember to allocate enough RAM before running this (you need aroundd 800 GB for
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn as nn
-from utils import disable_dropout, init_distributed, get_open_port
+from utils import disable_dropout
 import os
 import hydra
-import torch.multiprocessing as mp
 from omegaconf import OmegaConf, DictConfig
 import trainers
 import wandb
 import json
-import socket
 from typing import Optional, Set
 import resource
 from models import AutoModelForCausalLMWithValueHead
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
-import torch.distributed as dist
 import numpy as np
 import random
 import dataloader
 import gc
 from utils import delete_dict
+from accelerate import Accelerator, DistributedDataParallelKwargs
 
 
-def worker_main(rank: int, world_size: int, config: DictConfig, tokenizer: AutoTokenizer, train_iterator: dataloader.DataLoader, eval_iterator: dataloader.DataLoader, policy: nn.Module, reference_model: Optional[nn.Module] = None):
-    """Main function for each worker process (may be only 1 for BasicTrainer)."""
-    if config.use_fsdp:
-        init_distributed(rank, world_size, port=config.fsdp_port)
+def main(config: DictConfig):
+    """Main entry point for training. Validates config, creates/initializes model(s), and starts training."""
+    # Resolve hydra references, e.g. so we don't re-compute the run directory
+    OmegaConf.resolve(config)
+
+    missing_keys: Set[str] = OmegaConf.missing_keys(config)
+    if missing_keys:
+        raise ValueError(f"Got missing keys in config:\n{missing_keys}")
     
-    if config.debug:
-        wandb.init = lambda *args, **kwargs: None
-        wandb.log = lambda *args, **kwargs: None
+    set_seed(config.seed)
+    
+    # Initialize Accelerator
+    ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
+    accelerator = Accelerator(
+        project_dir=config.local_run_dir,
+        gradient_accumulation_steps=config.model.gradient_accumulation_steps,
+        kwargs_handlers=[ddp_kwargs]
+    )
 
-    if rank == 0 and config.wandb.enabled:
+    if accelerator.state.fsdp_plugin is not None:
+        accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
+
+    if accelerator.is_main_process:
+        os.makedirs(config.local_run_dir, exist_ok=True)
+        accelerator.print("Making experiment directory", config.local_run_dir)
+
         os.environ['WANDB_CACHE_DIR'] = config.cache_dir
         wandb.init(
             entity=config.wandb.entity,
@@ -63,80 +77,35 @@ def worker_main(rank: int, world_size: int, config: DictConfig, tokenizer: AutoT
             name=config.exp_name,
         )
 
-    TrainerClass = getattr(trainers, config.loss.trainer)
-    print(f'Creating trainer on process {rank} with world size {world_size}')
-
-    trainer = TrainerClass(
-        tokenizer, 
-        config, 
-        train_iterator, 
-        eval_iterator, 
-        policy, 
-        reference_model=reference_model, 
-        rank=rank, 
-        world_size=world_size, 
-        fsdp=config.use_fsdp,
-    )
-
-    trainer.train()
-    trainer.save()
-    
-
-@hydra.main(version_base=None, config_path="config", config_name="config")
-def main(config: DictConfig):
-    """Main entry point for training. Validates config, creates/initializes model(s), and kicks off worker process(es)."""
-    # Resolve hydra references, e.g. so we don't re-compute the run directory
-    OmegaConf.resolve(config)
-
-    missing_keys: Set[str] = OmegaConf.missing_keys(config)
-    if missing_keys:
-        raise ValueError(f"Got missing keys in config:\n{missing_keys}")
-
-    os.makedirs(config.local_run_dir, exist_ok=True)
-    print("Making experiment directory", config.local_run_dir)
-    
-    set_seed(config.seed)
-
     if config.eval_every % config.model.batch_size != 0:
-        print('WARNING: eval_every must be divisible by batch_size')
-        print('Setting eval_every to', config.eval_every - config.eval_every % config.model.batch_size)
+        accelerator.print('WARNING: eval_every must be divisible by batch_size')
+        accelerator.print('Setting eval_every to', config.eval_every - config.eval_every % config.model.batch_size)
         config.eval_every = config.eval_every - config.eval_every % config.model.batch_size
-
-    if config.use_fsdp and config.fsdp_port is None:
-        free_port = get_open_port()
-        print('no FSDP port specified; using open port for FSDP:', free_port)
-        config.fsdp_port = free_port
 
     if config.saved_policy is None:
         config.saved_policy = f"{config.local_run_dir}/LATEST/policy.pt"
 
-    print(OmegaConf.to_yaml(config))
+    accelerator.print(OmegaConf.to_yaml(config))
 
-    config_path = os.path.join(config.local_run_dir, 'config.yaml')
-    with open(config_path, 'w') as f:
-        OmegaConf.save(config, f)
+    if accelerator.is_main_process:
+        config_path = os.path.join(config.local_run_dir, 'config.yaml')
+        with open(config_path, 'w') as f:
+            OmegaConf.save(config, f)
 
-    print('=' * 80)
-    print(f'Writing to {socket.gethostname()}:{config.local_run_dir}')
-    print('=' * 80)
-    
-    policy_kwargs = {'torch_dtype' : getattr(torch, config.model.policy_dtype)}
-    reference_kwargs = {'torch_dtype' : getattr(torch, config.model.reference_dtype)}
-    
-    if not config.use_fsdp:
-        policy_kwargs['device_map'] = 'balanced'
-        reference_kwargs['device_map'] = 'balanced'
+    accelerator.print('=' * 80)
+    accelerator.print(f'Writing to {config.local_run_dir}')
+    accelerator.print('=' * 80)
 
-    print('building policy')
+    policy_kwargs = {'torch_dtype': getattr(torch, config.model.policy_dtype)}
+    reference_kwargs = {'torch_dtype': getattr(torch, config.model.reference_dtype)}
+
+    accelerator.print('building policy')
     model_class = AutoModelForCausalLMWithValueHead if config.loss.name == 'ppo' else AutoModelForCausalLM
-    policy = model_class.from_pretrained(
-        config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, **policy_kwargs)
-    disable_dropout(policy)
+    policy = model_class.from_pretrained(config.model.name_or_path, **policy_kwargs)
 
     if config.loss.use_reference_model:
-        print('building reference model')
-        reference_model = AutoModelForCausalLM.from_pretrained(
-            config.model.name_or_path, low_cpu_mem_usage=True, use_flash_attention_2=config.model.use_flash_attention, **reference_kwargs)
+        accelerator.print('building reference model')
+        reference_model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path, **reference_kwargs)
         disable_dropout(reference_model)
     else:
         reference_model = None
@@ -144,7 +113,7 @@ def main(config: DictConfig):
     if config.model.load_from is not None:
         state_dict = torch.load(os.path.join(config.cache_dir, config.model.load_from), map_location='cpu')
         step, metrics = state_dict['step_idx'], state_dict['metrics']
-        print(f'loading pre-trained weights at step {step} from {config.model.load_from} with metrics {json.dumps(metrics, indent=2)}')
+        accelerator.print(f'loading pre-trained weights at step {step} from {config.model.load_from} with metrics {json.dumps(metrics, indent=2)}')
 
         if config.loss.name == 'ppo':
             policy.pretrained_model.load_state_dict(state_dict['state'])
@@ -159,18 +128,18 @@ def main(config: DictConfig):
         gc.collect()
         torch.cuda.empty_cache()
 
-        print('loaded pre-trained weights')
+        accelerator.print('loaded pre-trained weights')
 
+    # Prepare tokenizers
     tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.model.name_or_path
-    print(f'Loading tokenizer {tokenizer_name_or_path}')
+    accelerator.print(f'Loading tokenizer {tokenizer_name_or_path}')
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    # add special tokens
-    special_tokens = [ config.loss.chosen_control_token, config.loss.rejected_control_token ] if config.loss.name == 'csft' else []
-    num_added = tokenizer.add_special_tokens({ "additional_special_tokens" : special_tokens })
-    if special_tokens != []:
+    special_tokens = [config.loss.chosen_control_token, config.loss.rejected_control_token] if config.loss.name == 'csft' else []
+    num_added = tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+    if special_tokens:
         if config.loss.name == 'ppo':
             # for PPO, policy and reference must tokenize the same way
             policy.pretrained_model.resize_token_embeddings(len(tokenizer))
@@ -178,8 +147,9 @@ def main(config: DictConfig):
         else:
             policy.resize_token_embeddings(len(tokenizer))
 
-    print(f"{num_added} special tokens added")
+    accelerator.print(f"{num_added} special tokens added")
 
+    # Create data loaders
     data_loader_class = getattr(dataloader, config.loss.dataloader)
     data_iterator_kwargs = dict(
         max_length=config.model.max_length,
@@ -202,7 +172,7 @@ def main(config: DictConfig):
         split='train',
         batch_size=config.model.batch_size,
         n_epochs=config.n_epochs,
-        n_examples=config.n_examples, 
+        n_examples=config.n_examples,
         **data_iterator_kwargs
     )
     eval_iterator = data_loader_class(
@@ -215,17 +185,24 @@ def main(config: DictConfig):
         **data_iterator_kwargs
     )
     
-    if config.use_fsdp:
-        world_size = torch.cuda.device_count()
-        print('starting', world_size, 'processes for FSDP training')
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
-        print(f'setting RLIMIT_NOFILE soft limit to {hard} from {soft}')
-        mp.spawn(worker_main, nprocs=world_size, args=(world_size, config, tokenizer, train_iterator, eval_iterator, policy, reference_model), join=True)
-    else:
-        print('starting single-process worker')
-        worker_main(0, 1, config, tokenizer, train_iterator, eval_iterator, policy, reference_model)
+    # Initialize trainer
+    TrainerClass = getattr(trainers, config.loss.trainer)
+    trainer = TrainerClass(
+        tokenizer, 
+        config, 
+        train_iterator, 
+        eval_iterator,
+        accelerator, 
+        policy, 
+        reference_model=reference_model
+    )
 
+    trainer.train()
+    trainer.save(os.path.join(config.local_run_dir, 'FINAL'))
+
+@hydra.main(version_base=None, config_path="config", config_name="config")
+def hydra_main(config: DictConfig):
+    main(config)
 
 if __name__ == '__main__':
-    main()
+    hydra_main()

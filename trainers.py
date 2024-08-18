@@ -74,18 +74,26 @@ class BasicTrainer(object):
         self.example_counter = 0
         self.batch_counter = 0
 
-        optimizer = getattr(torch.optim, self.config.optimizer)(policy.parameters(), lr=self.config.lr)
-        scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (self.config.warmup_steps + 1)))
-
-        self.policy, self.reference_model, self.train_iterator, self.eval_iterator, self.optimizer, self.scheduler = accelerator.prepare(
-            policy,
-            reference_model,
-            train_iterator, 
-            eval_iterator, 
-            optimizer, 
-            scheduler
-        )
+        self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
+
+        self.reference_model = reference_model
+        self.train_iterator = train_iterator
+        self.eval_iterator = eval_iterator
+        self.optimizer = getattr(torch.optim, self.config.optimizer)(policy.parameters(), lr=self.config.lr)
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (self.config.warmup_steps + 1)))
+        self.prepare_accelerator()
+
+    def prepare_accelerator(self):
+        """Prepare the Accelerator."""
+        self.policy, self.reference_model, self.train_iterator, self.eval_iterator, self.optimizer, self.scheduler = self.accelerator.prepare(
+            self.policy,
+            self.reference_model,
+            self.train_iterator, 
+            self.eval_iterator, 
+            self.optimizer, 
+            self.scheduler
+        )
 
     def get_batch_logps(self, logits: torch.FloatTensor, labels: torch.LongTensor, average_log_prob: bool = False, token_level: bool = False):
         """Compute the log probabilities of the given labels under the given logits."""
@@ -777,6 +785,18 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
 
 class PPOTrainer(BasicTrainer):
     """One-step, offline variant of PPO."""
+    def prepare_accelerator(self):
+        """Prepare the Accelerator."""
+        self.policy.pretrained_model, self.policy.v_head, self.reference_model, self.train_iterator, self.eval_iterator, self.optimizer, self.scheduler = self.accelerator.prepare(
+            self.policy.pretrained_model,
+            self.policy.v_head,
+            self.reference_model,
+            self.train_iterator, 
+            self.eval_iterator, 
+            self.optimizer, 
+            self.scheduler
+        )
+
     def forward(self, model: AutoModelForCausalLMWithValueHead, batch: Dict[str, Union[List, torch.LongTensor]], is_policy: bool=True) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.
 
@@ -888,6 +908,99 @@ class PPOTrainer(BasicTrainer):
         }
 
         return loss, loss_stats
+    
+    def get_global_batch_dict(self, batch):
+        """
+        Get the processed dict for the entire batch.
+
+        Args:
+            batch: dictionary containing batch data (shoud have keys 'values', 'returns', 'advantages', 'logprobs', 'masks')
+
+        Returns:
+            global_batch_dict: dictionary containing processed batch data
+        """
+        batch_size = len(batch['prompt_text'])
+        batch['scores'] = torch.Tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(batch_size)])
+        batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+        with torch.no_grad():
+            masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype)
+            logprobs, _, _ = self.forward(self.reference_model, batch, is_policy=False)
+            _, _, values = self.forward(self.policy, batch)
+            
+            rewards = torch.zeros_like(masks) 
+            for row in range(rewards.shape[0]):
+                rewards[row, masks[row].nonzero()[-1]] += batch['scores'][row]
+
+            rewards = rewards * masks
+            advantages, returns, discounted_future_rewards = self.compute_advantages(values, rewards, masks)
+            
+        global_batch_dict = {
+            "target_combined_input_ids": batch['target_combined_input_ids'],
+            "target_labels": batch['target_labels'],
+            "target_combined_attention_mask": batch['target_combined_attention_mask'],
+            "logprobs": logprobs,
+            "values": values,
+            "masks": masks,
+            "advantages": advantages,
+            "returns": returns,
+            "discounted_future_rewards": discounted_future_rewards,
+        }
+        global_batch_dict = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in global_batch_dict.items()}
+
+        return global_batch_dict
+
+    def eval(self) -> Dict[str, Dict]:
+        """
+        Run evaluation on all the examples in the test data and return the metrics from get_batch_metrics.
+        This is close-ended evaluation and measures the performance of a single model on a single dataset. 
+        It does not compare two models to eacch other.
+
+        Returns:
+            A dict of form:
+            {
+                'metadata': the Hydra config
+                'results': a dict of batch metrics (averaged across all of the test data)
+            }
+        """
+        self.accelerator.print(f'Running evaluation after {self.example_counter} train examples')
+        self.policy.eval()
+
+        # Wrap the eval_iterator with accelerator.prepare
+        eval_dataloader = self.accelerator.prepare(self.eval_iterator)
+
+        for eval_batch in (tqdm(eval_dataloader, desc='Computing eval metrics') if self.accelerator.is_main_process else eval_dataloader):
+            eval_batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in eval_batch.items()}
+            global_batch_dict = self.get_global_batch_dict(eval_batch)
+
+            with torch.no_grad():
+                _, eval_metrics = self.get_batch_metrics(global_batch_dict, mode='train')
+
+            delete_dict(eval_batch)
+
+        # Compute mean metrics
+        mean_eval_metrics = {}
+        for k, v in eval_metrics.items():
+            if len(v) > 0:
+                mean_eval_metrics[k] = sum(v) / len(v)
+
+        if self.accelerator.is_main_process and self.config.wandb.enabled:
+            wandb.log(mean_eval_metrics, step=self.example_counter)
+        else:
+            results = None
+
+        results = {
+            'metadata': OmegaConf.to_container(self.config),
+            'results': formatted_dict(mean_eval_metrics),
+        }
+
+        delete_dict(eval_metrics)
+        delete_dict(mean_eval_metrics)
+
+        self.accelerator.free_memory()
+        torch.cuda.empty_cache()
+        
+        return results
 
     def train(self):
         """Train with PPO."""
@@ -918,34 +1031,10 @@ class PPOTrainer(BasicTrainer):
                 delete_dict(results)
 
             # TRAINING
-            batch_size = len(batch['prompt_text'])
-            batch['scores'] = torch.Tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(batch_size)])
-
-            with torch.no_grad():
-                masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype)
-                logprobs, _, _ = self.forward(self.reference_model, batch, is_policy=False)
-                _, _, values = self.forward(self.policy, batch)
-                
-                rewards = torch.zeros_like(masks) 
-                for row in range(rewards.shape[0]):
-                    rewards[row, masks[row].nonzero()[-1]] += batch['scores'][row]
-
-                rewards = rewards * masks
-                advantages, returns, discounted_future_rewards = self.compute_advantages(values, rewards, masks)
-                
-            global_batch_dict = {
-                "target_combined_input_ids": batch['target_combined_input_ids'],
-                "target_labels": batch['target_labels'],
-                "target_combined_attention_mask": batch['target_combined_attention_mask'],
-                "logprobs": logprobs,
-                "values": values,
-                "masks": masks,
-                "advantages": advantages,
-                "returns": returns,
-                "discounted_future_rewards": discounted_future_rewards,
-            }
-            
             start_time = time.time()
+
+            batch_size = len(batch['prompt_text'])
+            global_batch_dict = self.get_global_batch_dict(batch)
 
             for ppo_epoch in range(self.config.loss.ppo_epochs):
                 with self.accelerator.accumulate(self.policy):
@@ -974,7 +1063,6 @@ class PPOTrainer(BasicTrainer):
             delete_dict(global_batch_dict)
             delete_dict(batch)
             delete_dict(local_batch_metrics)
-            del _, masks, logprobs, values, rewards, advantages, returns, discounted_future_rewards
 
             if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
                 mean_train_metrics = {}
@@ -997,15 +1085,20 @@ class PPOTrainer(BasicTrainer):
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-    def get_batch_metrics(self, global_batch_dict: Dict, batch_size: int, mode:str=None):
+    def get_batch_metrics(self, global_batch_dict: Dict, batch_size: int=0, mode:str=None):
         """
         Given a batch that has been processed in the outer loop of PPO, return the batch statistics and the loss.
         """
         if mode is None: 
             mode = self.config.mode
         
-        indices = torch.randperm(batch_size).tolist()
-        shuffled_global_batch = {k: v[indices] if isinstance(v, torch.Tensor) else [v[i] for i in indices] for k, v in global_batch_dict.items()}
+        # for train
+        if batch_size:
+            indices = torch.randperm(batch_size).tolist()
+            shuffled_global_batch = {k: v[indices] if isinstance(v, torch.Tensor) else [v[i] for i in indices] for k, v in global_batch_dict.items()}
+        # for eval
+        else:
+            shuffled_global_batch = global_batch_dict
 
         episode_logprobs, episode_logits, episode_values = self.forward(self.policy, shuffled_global_batch)
         episode = {
@@ -1048,5 +1141,25 @@ class PPOTrainer(BasicTrainer):
                 with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
                     json.dump(metrics, f)
         
+        self.accelerator.wait_for_everyone()
+        self.accelerator.print(f"Saving state...")
         self.accelerator.save_state(output_dir)
-        self.accelerator.print(f"Saved model, tokenizer, optimizer, and scheduler to {output_dir}")
+        self.accelerator.wait_for_everyone()
+        
+        self.accelerator.print(f"Saving model...")
+        unwrapped_lm = self.accelerator.unwrap_model(self.policy.pretrained_model)
+        unwrapped_lm.save_pretrained(
+            output_dir,
+            is_main_process=self.accelerator.is_main_process,
+            save_function=self.accelerator.save,
+            state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
+        )
+
+        unwrapped_v_head = self.accelerator.unwrap_model(self.policy.v_head)
+        unwrapped_v_head.save_pretrained(
+            f"{output_dir}/v_head",
+            is_main_process=self.accelerator.is_main_process,
+            save_function=self.accelerator.save,
+            state_dict=self.accelerator.get_state_dict(self.policy.v_head),
+        )
+        self.accelerator.wait_for_everyone()

@@ -79,7 +79,7 @@ LOSSES = {
 }
 
 
-def process_archangel(fn='results.jsonl'):
+def process_archangel(fn='assets/results.jsonl'):
     results = defaultdict(lambda: defaultdict(dict))
 
     for line in open(fn):
@@ -94,7 +94,7 @@ def process_archangel(fn='results.jsonl'):
     return results
 
 
-def process_fracdata(fn='results.jsonl'):
+def process_fracdata(fn='assets/results.jsonl'):
     """
     Returns a nested dict of losses, models, and 'F{U|D}{fraction of (un)desirable examples kept'.
     Only rows whose exp_name starts with fracdata are kept.
@@ -128,7 +128,7 @@ def plot_policy_lengths(model, losses, fn):
 
     plt.tight_layout()
     # Adding legend
-    plt.savefig(f'figures/{fn}.png')
+    plt.savefig(f'assets/figures/{fn}.png')
 
 
 def plot_model_winrates(losses, fn, confidence=0.90):
@@ -171,7 +171,7 @@ def plot_model_winrates(losses, fn, confidence=0.90):
     
     plt.tight_layout()
     # Adding legend
-    plt.savefig(f'figures/{fn}.png')
+    plt.savefig(f'assets/figures/{fn}.png')
 
 
 def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.90):
@@ -219,4 +219,4 @@ def plot_data_win_curves(loss='kto', model='llama7b', confidence=0.90):
 
     plt.tight_layout()
     # Adding legend
-    plt.savefig(f'figures/fracdata.png')
+    plt.savefig(f'assets/figures/fracdata.png')

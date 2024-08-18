@@ -20,7 +20,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import transformers
 import gc
-from models import AutoModelForCausalLMWithValueHead
+from models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
 
@@ -34,7 +34,7 @@ from utils import (
     masked_mean,
     masked_var,
     entropy_from_logits,
-    delete_dict,
+    delete_dicts,
     rowwise_product,
 )
 import numpy as np
@@ -195,8 +195,7 @@ class BasicTrainer(object):
             for k, v in eval_metrics.items():
                 all_eval_metrics[k].extend(v.float().cpu().numpy().tolist())
 
-            delete_dict(eval_batch)
-            delete_dict(eval_metrics)
+            delete_dicts(eval_batch, eval_metrics)
 
         # Compute mean metrics
         mean_eval_metrics = {}
@@ -244,7 +243,7 @@ class BasicTrainer(object):
                         self.save(output_dir, results['results'])
 
                 self.accelerator.print(results['results'])
-                delete_dict(results)
+                delete_dicts(results)
 
             # TRAINING
             self.policy.train()
@@ -266,9 +265,7 @@ class BasicTrainer(object):
                     self.scheduler.step()
                     self.optimizer.zero_grad()
 
-                delete_dict(batch)
-                delete_dict(metrics)
-                
+                delete_dicts(batch,metrics)
                 self.free_memory_if_needed()
 
             step_time = time.time() - start_time
@@ -293,8 +290,7 @@ class BasicTrainer(object):
 
                 last_log = time.time()
 
-                delete_dict(batch_metrics)
-                delete_dict(mean_train_metrics)
+                delete_dicts(batch_metrics, mean_train_metrics)
                 batch_metrics = defaultdict(list)
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
@@ -314,6 +310,12 @@ class BasicTrainer(object):
                 with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
                     json.dump(metrics, f)
         
+        self.accelerator.wait_for_everyone()
+        self.accelerator.print(f"Saving state...")
+        torch.save(self.optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+        torch.save(self.scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+        self.accelerator.wait_for_everyone()
+
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
         unwrapped_model = self.accelerator.unwrap_model(self.policy)
@@ -976,7 +978,7 @@ class PPOTrainer(BasicTrainer):
             with torch.no_grad():
                 _, eval_metrics = self.get_batch_metrics(global_batch_dict, mode='train')
 
-            delete_dict(eval_batch)
+            delete_dicts(eval_batch)
 
         # Compute mean metrics
         mean_eval_metrics = {}
@@ -994,9 +996,7 @@ class PPOTrainer(BasicTrainer):
             'results': formatted_dict(mean_eval_metrics),
         }
 
-        delete_dict(eval_metrics)
-        delete_dict(mean_eval_metrics)
-
+        delete_dicts(eval_metrics, mean_eval_metrics)
         self.accelerator.free_memory()
         torch.cuda.empty_cache()
         
@@ -1028,7 +1028,7 @@ class PPOTrainer(BasicTrainer):
                         self.save(output_dir, results['results'])
 
                 self.accelerator.print(results['results'])
-                delete_dict(results)
+                delete_dicts(results)
 
             # TRAINING
             start_time = time.time()
@@ -1060,9 +1060,7 @@ class PPOTrainer(BasicTrainer):
             examples_per_second = batch_size / step_time
             batch_metrics['examples_per_second'].append(examples_per_second)
 
-            delete_dict(global_batch_dict)
-            delete_dict(batch)
-            delete_dict(local_batch_metrics)
+            delete_dicts(global_batch_dict, batch, local_batch_metrics)
 
             if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
                 mean_train_metrics = {}
@@ -1079,8 +1077,7 @@ class PPOTrainer(BasicTrainer):
 
                 last_log = time.time()
 
-                delete_dict(batch_metrics)
-                delete_dict(mean_train_metrics)
+                delete_dicts(batch_metrics, mean_train_metrics)
                 batch_metrics = defaultdict(list)    
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
@@ -1118,10 +1115,7 @@ class PPOTrainer(BasicTrainer):
             v = self.accelerator.gather(v).flatten()
             batch_metrics[k].extend(v.float().cpu().numpy().tolist())
 
-        delete_dict(metrics)
-        delete_dict(episode)
-        delete_dict(global_batch_dict)
-        delete_dict(shuffled_global_batch)
+        delete_dicts(metrics, episode, global_batch_dict, shuffled_global_batch)
         del episode_logprobs, episode_logits, episode_values
 
         return loss, batch_metrics
@@ -1143,23 +1137,19 @@ class PPOTrainer(BasicTrainer):
         
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving state...")
-        self.accelerator.save_state(output_dir)
+        torch.save(self.optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
+        torch.save(self.scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
         self.accelerator.wait_for_everyone()
         
         self.accelerator.print(f"Saving model...")
         unwrapped_lm = self.accelerator.unwrap_model(self.policy.pretrained_model)
         unwrapped_lm.save_pretrained(
-            output_dir,
+            os.path.join(output_dir, "base_model"),
             is_main_process=self.accelerator.is_main_process,
             save_function=self.accelerator.save,
             state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
         )
 
         unwrapped_v_head = self.accelerator.unwrap_model(self.policy.v_head)
-        unwrapped_v_head.save_pretrained(
-            f"{output_dir}/v_head",
-            is_main_process=self.accelerator.is_main_process,
-            save_function=self.accelerator.save,
-            state_dict=self.accelerator.get_state_dict(self.policy.v_head),
-        )
+        torch.save(unwrapped_v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))
         self.accelerator.wait_for_everyone()

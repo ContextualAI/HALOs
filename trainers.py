@@ -660,9 +660,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         return losses, chosen_rewards, rejected_rewards, KL
     
     def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        """Run the given model on the given batch of inputs. The examples used to calculate the rewards and the KL term should be
-        processed in a single forward pass, since the gradient is taken wrt both groups. Doing it in multiple forward passes will give
-        you a RuntimeError: 'The tensor has a non-zero number of elements, but its data is not allocated yet.'
+        """Run the given model on the given batch of inputs.
         
         Args:
             - model: the model to use for the forward pass
@@ -673,38 +671,21 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             rejected_logps: log probabilities of rejected examples (should be batch size / 2 if data was read in correctly)
             KL_logps: log probabilities of the unmatched y'|x (used to estimate the KL divergence between policy and reference; should be batch size)
         """
-        max_length = max(batch['target_combined_input_ids'].shape[1], batch['KL_combined_input_ids'].shape[1])
-        concatenated_batch = {}
-
-        for k in batch:
-            if k.startswith('target') and isinstance(batch[k], torch.Tensor):
-                pad_value = -100 if 'labels' in k else 0
-                concatenated_key = k.replace('target', 'concatenated')
-                concatenated_batch[concatenated_key] = pad_to_length(batch[k], max_length, pad_value=pad_value)
-                
-        for k in batch:
-            if k.startswith('KL') and isinstance(batch[k], torch.Tensor):
-                pad_value = -100 if 'labels' in k else 0
-                concatenated_key = k.replace('KL', 'concatenated')
-                concatenated_batch[concatenated_key] = torch.cat((
-                    concatenated_batch[concatenated_key],
-                    pad_to_length(batch[k], max_length, pad_value=pad_value),
-                ), dim=0)
-
         with self.accelerator.autocast():
-            all_logits = model(
-                concatenated_batch[f'concatenated_combined_input_ids'],
-                attention_mask=concatenated_batch[f'concatenated_combined_attention_mask']
+            with torch.no_grad():
+                KL_logits = model(
+                    batch[f'KL_combined_input_ids'],
+                    attention_mask=batch[f'KL_combined_attention_mask']
+                ).logits.to(self.policy_dtype)
+
+                KL_logps = self.get_batch_logps(KL_logits, batch[f'KL_labels'], average_log_prob=False)
+
+            target_logits = model(
+                batch[f'target_combined_input_ids'],
+                attention_mask=batch[f'target_combined_attention_mask']
             ).logits.to(self.policy_dtype)
 
-            all_logps = self.get_batch_logps(
-                all_logits, 
-                concatenated_batch[f'concatenated_labels'], 
-                average_log_prob=False
-            )
-
-        target_logps = all_logps[:batch['target_combined_input_ids'].shape[0]]
-        KL_logps = all_logps[batch['target_combined_input_ids'].shape[0]:]
+            target_logps = self.get_batch_logps(target_logits, batch[f'target_labels'], average_log_prob=False)
 
         assert target_logps.shape[0] == len(batch['status'])
         chosen_idx = [i for i in range(target_logps.shape[0]) if batch['status'][i] == 'chosen']

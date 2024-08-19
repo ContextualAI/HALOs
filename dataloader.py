@@ -407,12 +407,14 @@ class DataLoader:
                  assistant_prefix: str = '\n<|assistant|>\n',   # marks start of assistant's turn
                  assistant_suffix: str = '',                    # marks end of assistant's turn
                  seed:int = 0,
+                 control_tokens: Dict = {},
                  **kwargs):
         
         torch.manual_seed(seed)
         random.seed(seed)
 
         self.tokenizer = tokenizer
+        self.control_tokens = control_tokens
         self.split = split
         self.batch_size = batch_size
         self.max_length = max_length
@@ -589,7 +591,7 @@ class SFTDataLoader(DataLoader):
             for example in flat_data:
                 batch_element = self.tokenize_batch_element(
                     # control token will be None for all losses other than csft
-                    example.prompt + (self.kwargs.get('chosen_control_token') or ''),
+                    example.prompt + (self.control_tokens.get('chosen') or ''),
                     example.generations[example.sft_index],
                     example.truncation_mode
                 )
@@ -624,10 +626,10 @@ class ConditionalSFTDataLoader(DataLoader):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        if self.kwargs.get('chosen_control_token') is None:
+        if self.control_tokens.get('chosen') is None:
             raise KeyError("control token for chosen outputs not specified")
         
-        if self.kwargs.get('rejected_control_token') is None:
+        if self.control_tokens.get('rejected') is None:
             raise KeyError("control token for rejected outputs not specified")
 
     def get_flat_data(self, prompts):
@@ -666,9 +668,9 @@ class ConditionalSFTDataLoader(DataLoader):
 
             for example, generation, status in flat_data:
                 if status == 'chosen':
-                    batch_element = self.tokenize_batch_element(example.prompt + self.kwargs["chosen_control_token"], generation, example.truncation_mode)
+                    batch_element = self.tokenize_batch_element(example.prompt + self.control_tokens["chosen"], generation, example.truncation_mode)
                 else:
-                    batch_element = self.tokenize_batch_element(example.prompt + self.kwargs["rejected_control_token"], generation, example.truncation_mode)
+                    batch_element = self.tokenize_batch_element(example.prompt + self.control_tokens["rejected"], generation, example.truncation_mode)
 
                 batch_element['status'] = status
                 batch.append(batch_element)
@@ -720,7 +722,6 @@ class SimpleKTODataLoader(DataLoader):
         while True:
             if done: break
             random.shuffle(flat_data)   # so generations in the same preference are not in the same batch
-            prev_example = None
             batch = []
 
             chosen_example_queue, rejected_example_queue = [], [] 

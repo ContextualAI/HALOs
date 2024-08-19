@@ -397,3 +397,20 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 state_dict[k.replace("v_head.", "")] = state_dict.pop(k)
         self.v_head.load_state_dict(state_dict, strict=False)
         del state_dict
+
+    def resize_token_embeddings(self, vocab_size):
+        """
+        Resize the vocabulary size of the language model.
+        """
+        self.pretrained_model.resize_token_embeddings(vocab_size)
+
+    @classmethod
+    def from_pretrained(cls, load_from, *args, **kwargs):
+        pretrained_model = AutoModelForCausalLM.from_pretrained(load_from, *args, **kwargs)
+        model_with_value_head = cls(pretrained_model)
+
+        if os.path.exists(os.path.join(load_from, "v_head.pt")):
+            state_dict = torch.load(os.path.join(load_from, "v_head.pt"), map_location='cpu')
+            model_with_value_head.v_head.load_state_dict(state_dict['state'])
+
+        return model_with_value_head

@@ -12,3 +12,7 @@ trainer: SLiCTrainer
 dataloader: PairedPreferenceDataLoader
 
 use_reference_model: false
+
+policy_hf_model_class: AutoModelForCausalLM
+
+reference_hf_model_class: AutoModelForCausalLM

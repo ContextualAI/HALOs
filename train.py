@@ -64,6 +64,16 @@ def main(config: DictConfig):
     if accelerator.state.fsdp_plugin is not None:
         accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
+    if config.eval_every % config.model.batch_size != 0:
+        accelerator.print('WARNING: eval_every must be divisible by batch_size')
+        accelerator.print('Setting eval_every to', config.eval_every - config.eval_every % config.model.batch_size)
+        config.eval_every = config.eval_every - config.eval_every % config.model.batch_size
+
+    if config.saved_policy is None:
+        config.saved_policy = f"{config.local_run_dir}/LATEST/policy.pt"
+
+    accelerator.print(OmegaConf.to_yaml(config))
+
     if accelerator.is_main_process:
         os.makedirs(config.local_run_dir, exist_ok=True)
         accelerator.print("Making experiment directory", config.local_run_dir)
@@ -76,80 +86,50 @@ def main(config: DictConfig):
             dir=config.cache_dir,
             name=config.exp_name,
         )
-
-    if config.eval_every % config.model.batch_size != 0:
-        accelerator.print('WARNING: eval_every must be divisible by batch_size')
-        accelerator.print('Setting eval_every to', config.eval_every - config.eval_every % config.model.batch_size)
-        config.eval_every = config.eval_every - config.eval_every % config.model.batch_size
-
-    if config.saved_policy is None:
-        config.saved_policy = f"{config.local_run_dir}/LATEST/policy.pt"
-
-    accelerator.print(OmegaConf.to_yaml(config))
-
-    if accelerator.is_main_process:
+    
         config_path = os.path.join(config.local_run_dir, 'config.yaml')
         with open(config_path, 'w') as f:
             OmegaConf.save(config, f)
 
-    accelerator.print('=' * 80)
-    accelerator.print(f'Writing to {config.local_run_dir}')
-    accelerator.print('=' * 80)
+        accelerator.print('=' * 80)
+        accelerator.print(f'Writing to {config.local_run_dir}')
+        accelerator.print('=' * 80)
 
-    policy_kwargs = {'torch_dtype': getattr(torch, config.model.policy_dtype)}
-    reference_kwargs = {'torch_dtype': getattr(torch, config.model.reference_dtype)}
-
-    accelerator.print('building policy')
-    model_class = AutoModelForCausalLMWithValueHead if config.loss.name == 'ppo' else AutoModelForCausalLM
-    policy = model_class.from_pretrained(config.model.name_or_path, **policy_kwargs)
-
-    if config.loss.use_reference_model:
-        accelerator.print('building reference model')
-        reference_model = AutoModelForCausalLM.from_pretrained(config.model.name_or_path, **reference_kwargs)
-        disable_dropout(reference_model)
-    else:
-        reference_model = None
-
-    if config.model.load_from is not None:
-        state_dict = torch.load(os.path.join(config.cache_dir, config.model.load_from), map_location='cpu')
-        step, metrics = state_dict['step_idx'], state_dict['metrics']
-        accelerator.print(f'loading pre-trained weights at step {step} from {config.model.load_from} with metrics {json.dumps(metrics, indent=2)}')
-
-        if config.loss.name == 'ppo':
-            policy.pretrained_model.load_state_dict(state_dict['state'])
-            if config.loss.use_reference_model:
-                reference_model.load_state_dict(state_dict['state'])
-        else:
-            policy.load_state_dict(state_dict['state'])
-            if config.loss.use_reference_model:
-                reference_model.load_state_dict(state_dict['state'])
-
-        delete_dict(state_dict)
-        gc.collect()
-        torch.cuda.empty_cache()
-
-        accelerator.print('loaded pre-trained weights')
-
-    # Prepare tokenizers
+    # Prepare tokenizer
     tokenizer_name_or_path = config.model.tokenizer_name_or_path or config.model.name_or_path
     accelerator.print(f'Loading tokenizer {tokenizer_name_or_path}')
     tokenizer = AutoTokenizer.from_pretrained(tokenizer_name_or_path)
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
-    special_tokens = [config.loss.chosen_control_token, config.loss.rejected_control_token] if config.loss.name == 'csft' else []
-    num_added = tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
-    if special_tokens:
-        if config.loss.name == 'ppo':
-            # for PPO, policy and reference must tokenize the same way
-            policy.pretrained_model.resize_token_embeddings(len(tokenizer))
-            reference_model.resize_token_embeddings(len(tokenizer))
-        else:
-            policy.resize_token_embeddings(len(tokenizer))
+    control_tokens = list(config.loss.get("control_tokens", {}).values())
+    num_added = tokenizer.add_special_tokens({"additional_special_tokens": control_tokens})
 
-    accelerator.print(f"{num_added} special tokens added")
+    # Building policy
+    policy_cls = globals()[config.loss.policy_hf_model_class]
+    policy_kwargs = {'torch_dtype': getattr(torch, config.model.policy_dtype)}
+    policy_path = config.model.load_from or config.model.name_or_path
+    accelerator.print(f'Loading policy from {policy_path}')
+    policy = policy_cls.from_pretrained(policy_path, **policy_kwargs)
+
+    if num_added:
+        policy.resize_token_embeddings(len(tokenizer))
+
+    # Building reference
+    if config.loss.use_reference_model:
+        reference_cls = globals()[config.loss.reference_hf_model_class]
+        reference_kwargs = {'torch_dtype': getattr(torch, config.model.reference_dtype)}
+        reference_path = config.model.load_from or config.model.name_or_path
+        accelerator.print(f'Loading reference model from {reference_path}')
+        reference_model = reference_cls.from_pretrained(reference_path, **reference_kwargs)
+
+        if num_added:
+            reference_model.resize_token_embeddings(len(tokenizer))
+    else:
+        reference_model = None
 
     # Create data loaders
+    accelerator.print(f'Loading data')
     data_loader_class = getattr(dataloader, config.loss.dataloader)
     data_iterator_kwargs = dict(
         max_length=config.model.max_length,
@@ -161,10 +141,7 @@ def main(config: DictConfig):
         seed=config.seed,
         frac_unique_desirable=config.frac_unique_desirable,
         frac_unique_undesirable=config.frac_unique_undesirable,
-        # control tokens taken from Korbak et al.'s (2023) "Pretraining Models with Human Feedback"
-        # SFTDataLoader will use them for sampling; ConditionalSFTDataLoader for training
-        chosen_control_token=(config.loss.chosen_control_token if config.loss.name == "csft" else None),
-        rejected_control_token=(config.loss.rejected_control_token if config.loss.name == "csft" else None),
+        control_tokens=config.loss.get("control_tokens", {}),
     )
     train_iterator = data_loader_class(
         config.datasets, 

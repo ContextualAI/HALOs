@@ -10,3 +10,9 @@ trainer: SimpleKTOTrainer
 dataloader: SimpleKTODataLoader
 
 use_reference_model: true
+
+hf_model_class: AutoModelForCausalLM
+
+policy_hf_model_class: AutoModelForCausalLM
+
+reference_hf_model_class: AutoModelForCausalLM

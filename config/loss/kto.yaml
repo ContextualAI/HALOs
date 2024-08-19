@@ -15,3 +15,7 @@ desirable_weight: 1.0
 
 # how much to weigh the losses of undesirable examples (when dataset is imbalanced)
 undesirable_weight: 1.0
+
+policy_hf_model_class: AutoModelForCausalLM
+
+reference_hf_model_class: AutoModelForCausalLM

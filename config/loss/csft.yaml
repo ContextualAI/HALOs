@@ -8,6 +8,10 @@ dataloader: ConditionalSFTDataLoader
 
 use_reference_model: false
 
-chosen_control_token: "<|good|>"
+control_tokens:
+  chosen: "<|good|>"
+  rejected: "<|bad|>"
 
-rejected_control_token: "<|bad|>"
+policy_hf_model_class: AutoModelForCausalLM
+
+reference_hf_model_class: AutoModelForCausalLM

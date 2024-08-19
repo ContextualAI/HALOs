@@ -195,13 +195,13 @@ class BasicTrainer(object):
             for k, v in eval_metrics.items():
                 all_eval_metrics[k].extend(v.float().cpu().numpy().tolist())
 
-            delete_dicts(eval_batch, eval_metrics)
-
         # Compute mean metrics
         mean_eval_metrics = {}
         for k, v in all_eval_metrics.items():
             if len(v) > 0:
                 mean_eval_metrics[k] = sum(v) / len(v)
+
+        delete_dicts(eval_batch, eval_metrics, all_eval_metrics)
 
         if self.accelerator.is_main_process and self.config.wandb.enabled:
             wandb.log(mean_eval_metrics, step=self.example_counter)
@@ -265,7 +265,7 @@ class BasicTrainer(object):
                     self.scheduler.step()
                     self.optimizer.zero_grad()
 
-                delete_dicts(batch,metrics)
+                delete_dicts(batch, metrics)
                 self.free_memory_if_needed()
 
             step_time = time.time() - start_time
@@ -314,8 +314,7 @@ class BasicTrainer(object):
         self.accelerator.print(f"Saving state...")
         torch.save(self.optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
         torch.save(self.scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-        self.accelerator.wait_for_everyone()
-
+        
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
         unwrapped_model = self.accelerator.unwrap_model(self.policy)
@@ -1139,12 +1138,12 @@ class PPOTrainer(BasicTrainer):
         self.accelerator.print(f"Saving state...")
         torch.save(self.optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
         torch.save(self.scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-        self.accelerator.wait_for_everyone()
         
+        self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
         unwrapped_lm = self.accelerator.unwrap_model(self.policy.pretrained_model)
         unwrapped_lm.save_pretrained(
-            os.path.join(output_dir, "base_model"),
+            output_dir,
             is_main_process=self.accelerator.is_main_process,
             save_function=self.accelerator.save,
             state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),

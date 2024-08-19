@@ -24,3 +24,7 @@ critic_coef: 0.01
 KL_coef: 0.1
 
 use_reference_model: true
+
+policy_hf_model_class: AutoModelForCausalLMWithValueHead
+
+reference_hf_model_class: AutoModelForCausalLM

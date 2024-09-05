@@ -8,8 +8,13 @@ Main script for training.
 
 Sample use is:
 
-python train.py loss=ppo model=llama30b datasets=[shp,hh,oasst] exp_name=archangel_sft+ppo_llama30b mode=train \
-     ++cache_dir=/data/models/archangel ++model.load_from=archangel_sft_llama30b/LATEST/policy.pt
+accelerate launch --config_file accelerate_config.yaml train.py \ 
+    loss=kto model=pythia1-4b \ 
+    datasets=[ultrabin] \ 
+    exp_name=deepspeed_kto \ 
+    mode=train \ 
+    ++cache_dir=/nlp/scr2/kawin/models \ 
+    ++model.from_checkpoint=/nlp/scr/kawin/models/deepspeed_kto/step-64
 
 where
 - loss should have a file under config/loss that specifies the trainer in trainers.py and dataloader in dataloader.py
@@ -34,11 +39,7 @@ from typing import Optional, Set
 import resource
 from models import AutoModelForCausalLMWithValueHead
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
-import numpy as np
-import random
 import dataloader
-import gc
-from utils import delete_dict
 from accelerate import Accelerator, DistributedDataParallelKwargs
 
 
@@ -108,7 +109,8 @@ def main(config: DictConfig):
     # Building policy
     policy_cls = globals()[config.loss.policy_hf_model_class]
     policy_kwargs = {'torch_dtype': getattr(torch, config.model.policy_dtype)}
-    policy_path = config.model.load_from or config.model.name_or_path
+    # first see if you need to load from checkpoint, a local pretrained model, or a remote pretrained model
+    policy_path = config.model.from_checkpoint or config.model.load_from or config.model.name_or_path
     accelerator.print(f'Loading policy from {policy_path}')
     policy = policy_cls.from_pretrained(policy_path, **policy_kwargs)
 
@@ -127,6 +129,11 @@ def main(config: DictConfig):
             reference_model.resize_token_embeddings(len(tokenizer))
     else:
         reference_model = None
+
+    # Loading optimizer, scheduler
+    accelerator.print("Creating optimizer and scheduler")
+    optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr)
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (config.warmup_steps + 1)))
 
     # Create data loaders
     accelerator.print(f'Loading data')
@@ -161,6 +168,19 @@ def main(config: DictConfig):
         n_epochs=(1 if config.n_eval_examples is None else None),
         **data_iterator_kwargs
     )
+
+    if config.model.from_checkpoint:
+        optimizer_state = optimizer.state_dict()
+        optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt"), map_location='cpu'))
+        optimizer.load_state_dict(optimizer_state)
+
+        scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
+        scheduler.load_state_dict(scheduler_state)
+
+        metrics = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json')))
+        num_skip_batches = int(metrics.get('counter', 0) / config.model.batch_size)
+    else:
+        num_skip_batches = 0
     
     # Initialize trainer
     TrainerClass = getattr(trainers, config.loss.trainer)
@@ -170,12 +190,18 @@ def main(config: DictConfig):
         train_iterator, 
         eval_iterator,
         accelerator, 
+        optimizer,
+        scheduler,
         policy, 
-        reference_model=reference_model
+        reference_model=reference_model,
+        num_skip_batches=num_skip_batches,
     )
 
     trainer.train()
-    trainer.save(os.path.join(config.local_run_dir, 'FINAL'))
+    trainer.save(
+        os.path.join(config.local_run_dir, 'FINAL'), 
+        metrics={'counter': trainer.example_counter}
+    )
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def hydra_main(config: DictConfig):

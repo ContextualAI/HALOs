@@ -57,8 +57,11 @@ class BasicTrainer(object):
                  train_iterator: dataloader.DataLoader, 
                  eval_iterator: dataloader.DataLoader, 
                  accelerator: Accelerator,
+                 optimizer: torch.optim.Optimizer,
+                 scheduler: torch.optim.lr_scheduler.LRScheduler,
                  policy: nn.Module, 
-                 reference_model: Optional[nn.Module] = None):
+                 reference_model: Optional[nn.Module] = None,
+                 num_skip_batches=0):
         """A trainer for a language model, supporting either SFT, HALO, or offline PPO training."""
         self.seed = config.seed
         torch.manual_seed(self.seed)
@@ -80,8 +83,9 @@ class BasicTrainer(object):
         self.reference_model = reference_model
         self.train_iterator = train_iterator
         self.eval_iterator = eval_iterator
-        self.optimizer = getattr(torch.optim, self.config.optimizer)(policy.parameters(), lr=self.config.lr)
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (self.config.warmup_steps + 1)))
+        self.optimizer = optimizer
+        self.scheduler = scheduler
+        self.num_skip_batches = num_skip_batches # when loading from checkpoint
         self.prepare_accelerator()
 
     def prepare_accelerator(self):
@@ -230,6 +234,11 @@ class BasicTrainer(object):
         batch_metrics = defaultdict(list)
 
         for batch in self.train_iterator:
+            if self.batch_counter < self.num_skip_batches:
+                self.batch_counter += 1
+                self.example_counter += self.config.model.batch_size
+                continue
+
             # EVALUATION
             if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
                 results = self.eval()
@@ -295,7 +304,7 @@ class BasicTrainer(object):
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-    def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = None):
+    def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
         self.accelerator.print(f"Saving...")
         if output_dir is None:
@@ -306,14 +315,21 @@ class BasicTrainer(object):
             self.accelerator.print(f"Saving tokenizer...")
             self.tokenizer.save_pretrained(output_dir)
 
-            if metrics:
-                with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
-                    json.dump(metrics, f)
+            with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
+                metrics['counter'] = self.example_counter
+                json.dump(metrics, f)
         
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving state...")
-        torch.save(self.optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-        torch.save(self.scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+        optimizer = self.accelerator.unwrap_model(self.optimizer)
+        scheduler = self.accelerator.unwrap_model(self.scheduler)
+        if self.accelerator.is_main_process:
+            optimizer_state = {
+                'state_dict': optimizer.state_dict(),
+                'class': optimizer.__class__.__name__,
+            }
+            torch.save(optimizer_state, os.path.join(output_dir, "optimizer.pt"))
+            torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
         
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
@@ -995,6 +1011,11 @@ class PPOTrainer(BasicTrainer):
         batch_metrics = defaultdict(list)
 
         for batch in self.train_iterator:
+            if self.batch_counter < self.num_skip_batches:
+                self.batch_counter += 1
+                self.example_counter += self.config.model.batch_size
+                continue
+
             # EVALUATION
             if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
                 results = self.eval()
@@ -1100,7 +1121,7 @@ class PPOTrainer(BasicTrainer):
 
         return loss, batch_metrics
 
-    def save(self, output_dir=None, metrics=None):
+    def save(self, output_dir=None, metrics={}):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
         self.accelerator.print(f"Saving...")
         if output_dir is None:
@@ -1111,15 +1132,22 @@ class PPOTrainer(BasicTrainer):
             self.accelerator.print(f"Saving tokenizer...")
             self.tokenizer.save_pretrained(output_dir)
 
-            if metrics:
-                with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
-                    json.dump(metrics, f)
+            with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
+                metrics['counter'] = self.example_counter
+                json.dump(metrics, f)
         
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving state...")
-        torch.save(self.optimizer.state_dict(), os.path.join(output_dir, "optimizer.pt"))
-        torch.save(self.scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
-        
+        optimizer = self.accelerator.unwrap_model(self.optimizer)
+        scheduler = self.accelerator.unwrap_model(self.scheduler)
+        if self.accelerator.is_main_process:
+            optimizer_state = {
+                'state_dict': optimizer.state_dict(),
+                'class': optimizer.__class__.__name__,
+            }
+            torch.save(optimizer_state, os.path.join(output_dir, "optimizer.pt"))
+            torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
+    
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
         unwrapped_lm = self.accelerator.unwrap_model(self.policy.pretrained_model)

@@ -20,15 +20,15 @@ import torch.nn.functional as F
 import torch.nn as nn
 import transformers
 import gc
-from models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead
+from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
 
 from accelerate import Accelerator
 import contextlib
 
-import dataloader
-from utils import (
+from . import dataloader
+from .utils import (
     formatted_dict,
     pad_to_length,
     masked_mean,

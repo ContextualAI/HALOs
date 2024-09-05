@@ -5,11 +5,8 @@ import os
 from typing import List, Dict
 from vllm import LLM, SamplingParams
 
-# Add parent directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 # Now we can import from the parent directory
-from dataloader import get_alpacaeval
+from train.dataloader import get_alpacaeval
 
 def main(args):
     # Load the model

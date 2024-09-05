@@ -28,18 +28,17 @@ Remember to allocate enough RAM before running this (you need aroundd 800 GB for
 import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn as nn
-from utils import disable_dropout
+from train.utils import disable_dropout
+from train.models import AutoModelForCausalLMWithValueHead
+from train import trainers
+from train import dataloader
 import os
 import hydra
 from omegaconf import OmegaConf, DictConfig
-import trainers
 import wandb
 import json
 from typing import Optional, Set
-import resource
-from models import AutoModelForCausalLMWithValueHead
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
-import dataloader
 from accelerate import Accelerator, DistributedDataParallelKwargs
 
 

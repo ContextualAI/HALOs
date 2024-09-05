@@ -28,7 +28,7 @@ import re
 import random
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
-from utils import rank0_print, on_rank0, delete_dict
+from .utils import rank0_print, on_rank0, delete_dict
 import pandas as pd
 import numpy as np
 

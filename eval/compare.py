@@ -1,7 +1,7 @@
 """
 Eval for comparing any two LLMs (local or on HF) using LLM-as-a-judge.
 
-    python compare.py --model1 /nlp/scr/kawin/models/deepspeed_kto/FINAL --model2 EleutherAI/pythia-1.4b --datasets shp oasst --n_samples 10
+    python -m eval.compare --model1 /nlp/scr/kawin/models/deepspeed_kto/FINAL --model2 EleutherAI/pythia-1.4b --datasets shp oasst --n_samples 10
 
 Each dataset must have a corresponding get_* method in dataloader.py 
 """
@@ -22,12 +22,9 @@ from openai import OpenAI
 import sys, os, signal, re
 from dataclasses import dataclass
 
-# Add parent directory to Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
 # Import necessary modules from your project
-import dataloader
-from utils import disable_dropout
+from train import dataloader
+from train.utils import disable_dropout
 
 
 @dataclass

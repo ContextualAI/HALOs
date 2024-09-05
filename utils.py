@@ -90,23 +90,6 @@ def entropy_from_logits(logits: torch.Tensor, mask: torch.Tensor) -> torch.Tenso
     return entropy
 
 
-def flatten_dict(nested, sep="/"):
-    """Flatten dictionary and concatenate nested keys with separator."""
-
-    def rec(nest, prefix, into):
-        for k, v in nest.items():
-            if sep in k:
-                raise ValueError(f"separator '{sep}' not allowed to be in key '{k}'")
-            if isinstance(v, Mapping):
-                rec(v, prefix + k + sep, into)
-            else:
-                into[prefix + k] = v
-
-    flat = {}
-    rec(nested, "", flat)
-    return flat
-
-
 def formatted_dict(d: Dict) -> Dict:
     """Format a dictionary for printing."""
     return {k: (f"{v:.5g}" if type(v) == float else v) for k, v in d.items()}
@@ -144,31 +127,3 @@ def print_gpu_memory(rank: int = None, message: str = ''):
             print('*' * 40)
             print(f'[{message} rank {rank} ] GPU {i}: {allocated_bytes / 1024**2:.2f} MB')
         print('*' * 40)
-
-
-def get_block_class_from_model(model: torch.nn.Module, block_class_name: str) -> torch.nn.Module:
-    """Get the class of a block from a model, using the block's class name."""
-    for module in model.modules():
-        if module.__class__.__name__ == block_class_name:
-            return module.__class__
-    raise ValueError(f"Could not find block class {block_class_name} in model {model}")
-
-
-def get_block_class_from_model_class_and_block_name(model_class: Type, block_class_name: str) -> Type:
-    filepath = inspect.getfile(model_class)
-    assert filepath.endswith('.py'), f"Expected a .py file, got {filepath}"
-    assert os.path.exists(filepath), f"File {filepath} does not exist"
-    assert "transformers" in filepath, f"Expected a transformers model, got {filepath}"
-
-    module_name = filepath[filepath.find('transformers'):].replace('/', '.')[:-3]
-    print(f"Searching in file {filepath}, module {module_name} for class {block_class_name}")
-
-    # Load the module dynamically
-    spec = importlib.util.spec_from_file_location(module_name, filepath)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-
-    # Get the class dynamically
-    class_ = getattr(module, block_class_name)
-    print(f"Found class {class_} in module {module_name}")
-    return class_

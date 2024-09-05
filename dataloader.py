@@ -167,6 +167,7 @@ def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: 
 
         i,j = data[prompt].num_generations(), data[prompt].num_generations() + 1
         data[prompt].prompt = prompt
+        data[prompt].original_prompt = row['history']
         data[prompt].generations.extend(responses)
         data[prompt].pairs.append((i, j) if row['labels'] == 1 else (j, i))
         data[prompt].scores.extend(scores)

@@ -15,3 +15,5 @@ control_tokens:
 policy_hf_model_class: AutoModelForCausalLM
 
 reference_hf_model_class: AutoModelForCausalLM
+
+average_log_probs: false

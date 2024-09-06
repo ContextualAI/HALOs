@@ -8,6 +8,9 @@ tokenizer_name_or_path: null
 # override pre-trained weights (e.g., from SFT); optional, should be the name of the model (e.g., archangel_sft_pythia-1.4b/LATEST/policy.pt)
 load_from: null
 
+# directory containing checkpoint
+from_checkpoint: null
+
 # the name of the module class to wrap with FSDP; should be something like
 #   e.g. GPT2Block, GPTNeoXLayer, LlamaDecoderLayer, etc.
 block_name: null
@@ -28,15 +31,15 @@ max_grad_norm: 10.0
 v_head_max_grad_norm: 0.10
 
 # the maximum allowed length for an input (prompt + response) (usually has to be smaller than what the model supports)
-max_length: 2048
+max_length: 512
 
 # the maximum allowed length for a prompt (remainder will be dedicated to the completion)
-max_prompt_length: 1024
+max_prompt_length: 256
 
 activation_checkpointing: true
 
 # the total batch size for training; for FSDP, divide by number of devices to get microbatch size
-batch_size: 32
+batch_size: 16
 
 # number of steps to accumulate over for each batch
 gradient_accumulation_steps: 1
@@ -44,4 +47,4 @@ gradient_accumulation_steps: 1
 # the batch size during evaluation and sampling, if enabled
 eval_batch_size: 16
 
-use_flash_attention: false
+attn_implementation: eager

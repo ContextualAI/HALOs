@@ -1,5 +1,5 @@
 defaults:
   - base_model
 
-name_or_path: EleutherAI/pythia-2.8b
+name_or_path: null
 block_name: GPTNeoXLayer

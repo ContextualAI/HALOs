@@ -1,9 +1,0 @@
-defaults:
-  - base_model
-
-name_or_path: huggyllama/llama-65b
-block_name: LlamaDecoderLayer
-use_flash_attention: true
-
-batch_size: 16
-gradient_accumulation_steps: 4

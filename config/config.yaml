@@ -23,7 +23,7 @@ fsdp_port: null
 wandb:
   enabled: true
   entity: null
-  project: "archangel"
+  project: "halos"
 
 # where trained models will be saved
 # use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 

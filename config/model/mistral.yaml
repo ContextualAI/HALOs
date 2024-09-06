@@ -3,3 +3,4 @@ defaults:
 
 name_or_path: null
 block_name: MistralDecoderLayer
+attn_implementation: flash_attention_2

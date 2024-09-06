@@ -377,7 +377,7 @@ class SFTTrainer(BasicTrainer):
             policy_chosen_logps = self.get_batch_logps(
                 policy_chosen_logits, 
                 batch['target_labels'], 
-                average_log_prob=False
+                average_log_prob=self.config.loss.average_log_probs
             )
             losses = -policy_chosen_logps
 
@@ -408,7 +408,7 @@ class UnpairedPreferenceTrainer(BasicTrainer):
             all_logps = self.get_batch_logps(
                 all_logits, 
                 batch['target_labels'], 
-                average_log_prob=False
+                average_log_prob=self.config.loss.average_log_probs
             )
 
         assert all_logps.shape[0] == len(batch['status'])
@@ -505,7 +505,7 @@ class PairedPreferenceTrainer(BasicTrainer):
             all_logps = self.get_batch_logps(
                 all_logits, 
                 concatenated_batch['concatenated_labels'], 
-                average_log_prob=False
+                average_log_prob=self.config.loss.average_log_probs
             )
         
         chosen_logps = all_logps[:batch['chosen_combined_input_ids'].shape[0]]
@@ -694,14 +694,14 @@ class KTOTrainer(UnpairedPreferenceTrainer):
                     attention_mask=batch[f'KL_combined_attention_mask']
                 ).logits.to(self.policy_dtype)
 
-                KL_logps = self.get_batch_logps(KL_logits, batch[f'KL_labels'], average_log_prob=False)
+                KL_logps = self.get_batch_logps(KL_logits, batch[f'KL_labels'], average_log_prob=self.config.loss.average_log_probs)
 
             target_logits = model(
                 batch[f'target_combined_input_ids'],
                 attention_mask=batch[f'target_combined_attention_mask']
             ).logits.to(self.policy_dtype)
 
-            target_logps = self.get_batch_logps(target_logits, batch[f'target_labels'], average_log_prob=False)
+            target_logps = self.get_batch_logps(target_logits, batch[f'target_labels'], average_log_prob=self.config.loss.average_log_probs)
 
         assert target_logps.shape[0] == len(batch['status'])
         chosen_idx = [i for i in range(target_logps.shape[0]) if batch['status'][i] == 'chosen']
@@ -818,7 +818,7 @@ class PPOTrainer(BasicTrainer):
             all_logits = model(batch['target_combined_input_ids'], attention_mask=batch['target_combined_attention_mask']).logits.to(self.policy_dtype)
             all_values = None
 
-        all_logps = self.get_batch_logps(all_logits.to(self.policy_dtype), batch['target_labels'], average_log_prob=False, token_level=True)
+        all_logps = self.get_batch_logps(all_logits.to(self.policy_dtype), batch['target_labels'], average_log_prob=self.config.loss.average_log_probs, token_level=True)
         # Returned tensors will have sequence length that is one less than the inputs (to account for label shifting).
         all_logits = all_logits[:, :-1].contiguous()
         all_logps = all_logps.contiguous()

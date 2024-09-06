@@ -48,3 +48,5 @@ gradient_accumulation_steps: 1
 eval_batch_size: 16
 
 attn_implementation: eager
+
+activation_checkpointing: true

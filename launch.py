@@ -107,11 +107,17 @@ def main(config: DictConfig):
 
     # Building policy
     policy_cls = globals()[config.loss.policy_hf_model_class]
-    policy_kwargs = {'torch_dtype': getattr(torch, config.model.policy_dtype)}
+    policy_kwargs = {
+        'torch_dtype': getattr(torch, config.model.policy_dtype), 
+        'attn_implementation' : config.model.attn_implementation,
+    }
     # first see if you need to load from checkpoint, a local pretrained model, or a remote pretrained model
     policy_path = config.model.from_checkpoint or config.model.load_from or config.model.name_or_path
     accelerator.print(f'Loading policy from {policy_path}')
     policy = policy_cls.from_pretrained(policy_path, **policy_kwargs)
+
+    if config.model.activation_checkpointing:
+        policy.gradient_checkpointing_enable()
 
     if num_added:
         policy.resize_token_embeddings(len(tokenizer))
@@ -119,10 +125,16 @@ def main(config: DictConfig):
     # Building reference
     if config.loss.use_reference_model:
         reference_cls = globals()[config.loss.reference_hf_model_class]
-        reference_kwargs = {'torch_dtype': getattr(torch, config.model.reference_dtype)}
+        reference_kwargs = {
+            'torch_dtype': getattr(torch, config.model.reference_dtype),
+            'attn_implementation' : config.model.attn_implementation,
+        }
         reference_path = config.model.load_from or config.model.name_or_path
         accelerator.print(f'Loading reference model from {reference_path}')
         reference_model = reference_cls.from_pretrained(reference_path, **reference_kwargs)
+
+        if config.model.activation_checkpointing: 
+            reference_model.gradient_checkpointing_enable()
 
         if num_added:
             reference_model.resize_token_embeddings(len(tokenizer))

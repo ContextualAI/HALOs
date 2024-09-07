@@ -31,15 +31,15 @@ max_grad_norm: 10.0
 v_head_max_grad_norm: 0.10
 
 # the maximum allowed length for an input (prompt + response) (usually has to be smaller than what the model supports)
-max_length: 512
+max_length: 256
 
 # the maximum allowed length for a prompt (remainder will be dedicated to the completion)
-max_prompt_length: 256
+max_prompt_length: 128
 
 activation_checkpointing: true
 
 # the total batch size for training; for FSDP, divide by number of devices to get microbatch size
-batch_size: 16
+batch_size: 32
 
 # number of steps to accumulate over for each batch
 gradient_accumulation_steps: 1
@@ -48,5 +48,3 @@ gradient_accumulation_steps: 1
 eval_batch_size: 16
 
 attn_implementation: eager
-
-activation_checkpointing: true

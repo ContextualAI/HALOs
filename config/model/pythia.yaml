@@ -3,3 +3,4 @@ defaults:
 
 name_or_path: null
 block_name: GPTNeoXLayer
+activation_checkpointing: false # doesn't work with pythia

@@ -40,6 +40,7 @@ import json
 from typing import Optional, Set
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
+from peft import LoraConfig, TaskType, get_peft_model, PeftModel
 
 
 def main(config: DictConfig):
@@ -122,6 +123,35 @@ def main(config: DictConfig):
     if num_added:
         policy.resize_token_embeddings(len(tokenizer))
 
+    if config.model.use_peft:
+        lm_model = policy.pretrained_model if config.loss.policy_hf_model_class == "AutoModelForCausalLMWithValueHead" else policy
+
+        if config.model.load_lora_from:
+            lm_model = PeftModel.from_pretrained(
+                lm_model, 
+                config.model.load_lora_from, 
+                torch_dtype=getattr(torch, config.model.policy_dtype)
+            )
+        else:
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=config.model.peft.lora_r,
+                lora_alpha=config.model.peft.lora_alpha,
+                lora_dropout=config.model.peft.lora_dropout,
+                bias="none",
+                target_modules=config.model.peft.target_modules,
+                inference_mode=False,
+                use_rslora=True,
+            )
+            lm_model = get_peft_model(lm_model, peft_config)
+
+            # Ensure LoRA layers are in the same dtype as the base model
+            for name, module in lm_model.named_modules():
+                if 'lora_' in name:
+                    module.to(getattr(torch, config.model.policy_dtype))
+    else:
+        peft_config = None
+
     # Building reference
     if config.loss.use_reference_model:
         reference_cls = globals()[config.loss.reference_hf_model_class]
@@ -138,6 +168,8 @@ def main(config: DictConfig):
 
         if num_added:
             reference_model.resize_token_embeddings(len(tokenizer))
+
+        reference_model.eval()
     else:
         reference_model = None
 

@@ -52,7 +52,7 @@ trainer: BasicTrainer
 ## TRAINING SETTINGS
 
 # the learning rate
-lr: 5e-7
+lr: 5e-5
 
 # the number of epochs to train for; if null, must specify n_examples
 n_epochs: 1
@@ -61,7 +61,7 @@ n_epochs: 1
 n_examples: null
 
 # The optimizer to use; we use RMSprop because it works about as well as Adam and is more memory-efficient
-optimizer: RMSprop
+optimizer: Adam
 
 # number of linear warmup steps for the learning rate
 warmup_steps: 150

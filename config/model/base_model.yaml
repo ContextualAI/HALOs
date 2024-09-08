@@ -5,7 +5,7 @@ name_or_path: ???
 # the name of the tokenizer to use; if null, will use the tokenizer from the model
 tokenizer_name_or_path: null
 
-# override pre-trained weights (e.g., from SFT); optional, should be the name of the model (e.g., archangel_sft_pythia-1.4b/LATEST/policy.pt)
+# override pre-trained weights from local model (e.g., from SFT); optional, should be the name of the model (e.g., archangel_sft_pythia-1.4b/LATEST/policy.pt)
 load_from: null
 
 # directory containing checkpoint
@@ -16,16 +16,16 @@ from_checkpoint: null
 block_name: null
 
 # the dtype for the policy parameters/optimizer state
-policy_dtype: bfloat16
+policy_dtype: float32
 
 # the mixed precision dtype if using FSDP; defaults to the same as the policy
 fsdp_policy_mp: null
 
 # the dtype for the reference model (which is used for inference only)
-reference_dtype: bfloat16
+reference_dtype: float32
 
 # the maximum gradient norm to clip to
-max_grad_norm: 10.0
+max_grad_norm: 1.0
 
 # gradient norm for clipping gradient of value head (for PPO)
 v_head_max_grad_norm: 0.10
@@ -39,7 +39,7 @@ max_prompt_length: 256
 activation_checkpointing: true
 
 # the total batch size for training; for FSDP, divide by number of devices to get microbatch size
-batch_size: 16
+batch_size: 8
 
 # number of steps to accumulate over for each batch
 gradient_accumulation_steps: 1
@@ -48,3 +48,13 @@ gradient_accumulation_steps: 1
 eval_batch_size: 16
 
 attn_implementation: eager
+
+use_peft: true
+
+load_lora_from: null
+
+peft:
+  lora_r: 32
+  lora_alpha: 64
+  lora_dropout: 0.05
+  target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj", "lm_head"]

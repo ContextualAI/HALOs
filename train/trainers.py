@@ -244,7 +244,7 @@ class BasicTrainer(object):
                     elif self.config.intermediate_checkpoints:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
                         self.accelerator.print(f'creating checkpoint to write to {output_dir}...')
-                        self.save(output_dir, results['results'])
+                        self.save(output_dir, results['results'], final_save=False)
 
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
@@ -299,7 +299,7 @@ class BasicTrainer(object):
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-    def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}):
+    def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
         self.accelerator.print(f"Saving...")
         if output_dir is None:
@@ -329,12 +329,29 @@ class BasicTrainer(object):
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
         unwrapped_model = self.accelerator.unwrap_model(self.policy)
-        unwrapped_model.save_pretrained(
-            output_dir,
-            is_main_process=self.accelerator.is_main_process,
-            save_function=self.accelerator.save,
-            state_dict=self.accelerator.get_state_dict(self.policy),
-        )
+
+        if self.config.model.use_peft:
+            if final_save: # save fully merged model
+                unwrapped_model = unwrapped_model.merge_and_unload()
+                unwrapped_model.save_pretrained(
+                    output_dir,
+                    is_main_process=self.accelerator.is_main_process,
+                    save_function=self.accelerator.save,
+                    state_dict=self.accelerator.get_state_dict(self.policy),
+                )
+            else: # only save the lora
+                unwrapped_model.save_pretrained(
+                    output_dir,
+                    is_main_process=self.accelerator.is_main_process,
+                )
+        else:            
+            unwrapped_model.save_pretrained(
+                output_dir,
+                is_main_process=self.accelerator.is_main_process,
+                save_function=self.accelerator.save,
+                state_dict=self.accelerator.get_state_dict(self.policy),
+            )
+
         self.accelerator.wait_for_everyone()
 
     def free_memory_if_needed(self):
@@ -542,8 +559,8 @@ class DPOTrainer(PairedPreferenceTrainer):
         rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
 
         if self.config.loss.length_normalization:
-            chosen_rewards = chosen_rewards / (policy_chosen_logps != 0).sum(-1).clamp(min=1)
-            rejected_rewards = rejected_rewards / (policy_rejected_logps != 0).sum(-1).clamp(min=1)
+            chosen_rewards = chosen_rewards * 100 / (policy_chosen_logps != 0).sum(-1).clamp(min=1)
+            rejected_rewards = rejected_rewards * 100 / (policy_rejected_logps != 0).sum(-1).clamp(min=1)
 
         losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
 
@@ -563,8 +580,8 @@ class CDPOTrainer(PairedPreferenceTrainer):
         rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
         
         if self.config.loss.length_normalization:
-            chosen_rewards = chosen_rewards / (policy_chosen_logps != 0).sum(-1).clamp(min=1)
-            rejected_rewards = rejected_rewards / (policy_rejected_logps != 0).sum(-1).clamp(min=1)
+            chosen_rewards = chosen_rewards * 100 / (policy_chosen_logps != 0).sum(-1).clamp(min=1)
+            rejected_rewards = rejected_rewards * 100 / (policy_rejected_logps != 0).sum(-1).clamp(min=1)
 
         forward_losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
         reverse_losses = -F.logsigmoid(rejected_rewards - chosen_rewards)
@@ -625,18 +642,17 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         
         if self.config.loss.length_normalization:
             KL_lengths = (policy_KL_logps != 0).sum(-1).clamp(min=1)
-            KL_rewards = KL_rewards / KL_lengths
+            KL_rewards = KL_rewards * 100 / KL_lengths
 
-        KL = KL_rewards.mean().detach()
         # take mean of the KL estimates across all devices
-        KL = self.accelerator.gather(KL).mean().clamp(min=1e-5)
+        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
             chosen_lengths = (policy_chosen_logps != 0).sum(-1).clamp(min=1)
 
             if self.config.loss.length_normalization:
-                chosen_rewards = chosen_rewards / chosen_lengths
+                chosen_rewards = chosen_rewards * 100 / chosen_lengths
 
             chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL))
         else:
@@ -649,7 +665,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             rejected_lengths = (policy_rejected_logps != 0).sum(-1).clamp(min=1)
 
             if self.config.loss.length_normalization:
-                rejected_rewards = rejected_rewards / rejected_lengths
+                rejected_rewards = rejected_rewards * 100 / rejected_lengths
 
             rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards))
         else:
@@ -763,7 +779,7 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
             chosen_lengths = (policy_chosen_logps != 0).sum(-1).clamp(min=1)
 
             if self.config.loss.length_normalization:
-                chosen_rewards = chosen_rewards / chosen_lengths
+                chosen_rewards = chosen_rewards * 100 / chosen_lengths
 
             chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - 0))
         else:
@@ -776,7 +792,7 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
             rejected_lengths = (policy_rejected_logps != 0).sum(-1).clamp(min=1)
 
             if self.config.loss.length_normalization:
-                rejected_rewards = rejected_rewards / rejected_lengths
+                rejected_rewards = rejected_rewards * 100 / rejected_lengths
 
             rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (0 - rejected_rewards))
         else:
@@ -1034,7 +1050,7 @@ class PPOTrainer(BasicTrainer):
                     elif self.config.intermediate_checkpoints:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
                         self.accelerator.print(f'creating checkpoint to write to {output_dir}...')
-                        self.save(output_dir, results['results'])
+                        self.save(output_dir, results['results'], final_save=False)
 
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
@@ -1129,7 +1145,7 @@ class PPOTrainer(BasicTrainer):
 
         return loss, batch_metrics
 
-    def save(self, output_dir=None, metrics={}):
+    def save(self, output_dir=None, metrics={}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
         self.accelerator.print(f"Saving...")
         if output_dir is None:
@@ -1159,12 +1175,30 @@ class PPOTrainer(BasicTrainer):
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
         unwrapped_lm = self.accelerator.unwrap_model(self.policy.pretrained_model)
-        unwrapped_lm.save_pretrained(
-            output_dir,
-            is_main_process=self.accelerator.is_main_process,
-            save_function=self.accelerator.save,
-            state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
-        )
+
+        if self.config.model.use_peft:
+            if final_save: # save the fully merged policy
+                unwrapped_lm = unwrapped_lm.merge_and_unload()
+                unwrapped_lm.save_pretrained(
+                    output_dir,
+                    is_main_process=self.accelerator.is_main_process,
+                    save_function=self.accelerator.save,
+                    state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
+                )
+            else: # only save the lora
+                unwrapped_lm.save_pretrained(
+                    output_dir,
+                    is_main_process=self.accelerator.is_main_process,
+                )
+        else:            
+            unwrapped_lm.save_pretrained(
+                output_dir,
+                is_main_process=self.accelerator.is_main_process,
+                save_function=self.accelerator.save,
+                state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
+            )
+            
+        self.accelerator.wait_for_everyone()
 
         unwrapped_v_head = self.accelerator.unwrap_model(self.policy.v_head)
         torch.save(unwrapped_v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))

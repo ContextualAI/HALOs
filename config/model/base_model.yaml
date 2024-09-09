@@ -25,7 +25,7 @@ fsdp_policy_mp: null
 reference_dtype: float32
 
 # the maximum gradient norm to clip to
-max_grad_norm: 1.0
+max_grad_norm: 5.0
 
 # gradient norm for clipping gradient of value head (for PPO)
 v_head_max_grad_norm: 0.10
@@ -42,7 +42,7 @@ activation_checkpointing: true
 batch_size: 8
 
 # number of steps to accumulate over for each batch
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 2
 
 # the batch size during evaluation and sampling, if enabled
 eval_batch_size: 16
@@ -54,7 +54,7 @@ use_peft: true
 load_lora_from: null
 
 peft:
-  lora_r: 32
-  lora_alpha: 64
+  lora_r: 64
+  lora_alpha: 256 
   lora_dropout: 0.05
-  target_modules: ["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "down_proj", "up_proj", "lm_head"]
+  target_modules: "all-linear"

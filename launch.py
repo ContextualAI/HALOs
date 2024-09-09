@@ -62,7 +62,7 @@ def main(config: DictConfig):
         kwargs_handlers=[ddp_kwargs]
     )
 
-    if accelerator.state.fsdp_plugin is not None:
+    if config.use_fsdp and accelerator.state.fsdp_plugin is not None:
         accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
     if config.eval_every % config.model.batch_size != 0:
@@ -110,7 +110,7 @@ def main(config: DictConfig):
     policy_cls = globals()[config.loss.policy_hf_model_class]
     policy_kwargs = {
         'torch_dtype': getattr(torch, config.model.policy_dtype), 
-        'attn_implementation' : config.model.attn_implementation,
+        'attn_implementation' : config.model.attn_implementation if config.model.policy_dtype in ["float16", "bfloat16"] else "eager",
     }
     # first see if you need to load from checkpoint, a local pretrained model, or a remote pretrained model
     policy_path = config.model.from_checkpoint or config.model.load_from or config.model.name_or_path
@@ -124,11 +124,9 @@ def main(config: DictConfig):
         policy.resize_token_embeddings(len(tokenizer))
 
     if config.model.use_peft:
-        lm_model = policy.pretrained_model if config.loss.policy_hf_model_class == "AutoModelForCausalLMWithValueHead" else policy
-
         if config.model.load_lora_from:
-            lm_model = PeftModel.from_pretrained(
-                lm_model, 
+            policy = PeftModel.from_pretrained(
+                policy, 
                 config.model.load_lora_from, 
                 torch_dtype=getattr(torch, config.model.policy_dtype)
             )
@@ -141,12 +139,11 @@ def main(config: DictConfig):
                 bias="none",
                 target_modules=config.model.peft.target_modules,
                 inference_mode=False,
-                use_rslora=True,
             )
-            lm_model = get_peft_model(lm_model, peft_config)
+            policy = get_peft_model(policy, peft_config)
 
             # Ensure LoRA layers are in the same dtype as the base model
-            for name, module in lm_model.named_modules():
+            for name, module in policy.named_modules():
                 if 'lora_' in name:
                     module.to(getattr(torch, config.model.policy_dtype))
     else:
@@ -157,7 +154,7 @@ def main(config: DictConfig):
         reference_cls = globals()[config.loss.reference_hf_model_class]
         reference_kwargs = {
             'torch_dtype': getattr(torch, config.model.reference_dtype),
-            'attn_implementation' : config.model.attn_implementation,
+            'attn_implementation' : config.model.attn_implementation if config.model.policy_dtype in ["float16", "bfloat16"] else "eager",
         }
         reference_path = config.model.load_from or config.model.name_or_path
         accelerator.print(f'Loading reference model from {reference_path}')

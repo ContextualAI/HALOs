@@ -192,7 +192,7 @@ class BasicTrainer(object):
                 _, eval_metrics = self.get_batch_metrics(eval_batch, mode='eval')
 
             for k, v in eval_metrics.items():
-                all_eval_metrics[k].extend(v.float().cpu().numpy().tolist())
+                all_eval_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
         # Compute mean metrics
         mean_eval_metrics = {}
@@ -260,14 +260,13 @@ class BasicTrainer(object):
                 self.accelerator.backward(loss)
 
                 for k, v in metrics.items():
-                    batch_metrics[k].extend(v.float().cpu().numpy().tolist())
+                    batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
-                if self.accelerator.sync_gradients:
-                    grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                    batch_metrics['grad_norm'].append(grad_norm.float().cpu().numpy().tolist())
-                    self.optimizer.step()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
+                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
 
                 delete_dicts(batch, metrics)
                 self.free_memory_if_needed()
@@ -1069,14 +1068,12 @@ class PPOTrainer(BasicTrainer):
                         batch_metrics[k].extend(v)
 
                     self.accelerator.backward(loss)
-
-                    if self.accelerator.sync_gradients:
-                        v_head_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
-                        pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
-                        batch_metrics['grad_norm'].append((v_head_norm + pretrained_norm).float().cpu().numpy().tolist())
-                        self.optimizer.step()
-                        self.scheduler.step()
-                        self.optimizer.zero_grad()
+                    v_head_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
+                    pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
+                    batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
 
             self.batch_counter += 1
             self.example_counter += batch_size
@@ -1138,7 +1135,7 @@ class PPOTrainer(BasicTrainer):
         batch_metrics = defaultdict(list)
         for k, v in metrics.items():
             v = self.accelerator.gather(v).flatten()
-            batch_metrics[k].extend(v.float().cpu().numpy().tolist())
+            batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
         delete_dicts(metrics, episode, global_batch_dict, shuffled_global_batch)
         del episode_logprobs, episode_logits, episode_values

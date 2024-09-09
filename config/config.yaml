@@ -52,7 +52,7 @@ trainer: BasicTrainer
 ## TRAINING SETTINGS
 
 # the learning rate
-lr: 5e-5
+lr: 1e-5
 
 # the number of epochs to train for; if null, must specify n_examples
 n_epochs: 1
@@ -61,13 +61,13 @@ n_epochs: 1
 n_examples: null
 
 # The optimizer to use; we use RMSprop because it works about as well as Adam and is more memory-efficient
-optimizer: Adam
+optimizer: AdamW
 
 # number of linear warmup steps for the learning rate
 warmup_steps: 150
 
 # evaluate and save model every eval_every steps
-eval_every: 20_000
+eval_every: 1000
 
 
 ### EVALUATION SETTINGS
@@ -79,7 +79,7 @@ n_samples: 128
 samples_dir: "samples/"
 
 # the number of examples to evaluate on (leave as null to evaluate on all of them)
-n_eval_examples: 512
+n_eval_examples: 256
 
 # where the aligned policy model is stored
 saved_policy: null

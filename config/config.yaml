@@ -52,7 +52,7 @@ trainer: BasicTrainer
 ## TRAINING SETTINGS
 
 # the learning rate
-lr: 1e-5
+lr: 5e-6
 
 # the number of epochs to train for; if null, must specify n_examples
 n_epochs: 1

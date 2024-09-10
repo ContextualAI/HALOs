@@ -16,13 +16,13 @@ from_checkpoint: null
 block_name: null
 
 # the dtype for the policy parameters/optimizer state
-policy_dtype: float32
+policy_dtype: bfloat16
 
 # the mixed precision dtype if using FSDP; defaults to the same as the policy
 fsdp_policy_mp: null
 
 # the dtype for the reference model (which is used for inference only)
-reference_dtype: float32
+reference_dtype: bfloat16
 
 # the maximum gradient norm to clip to
 max_grad_norm: 5.0
@@ -31,10 +31,10 @@ max_grad_norm: 5.0
 v_head_max_grad_norm: 0.10
 
 # the maximum allowed length for an input (prompt + response) (usually has to be smaller than what the model supports)
-max_length: 512
+max_length: 1024
 
 # the maximum allowed length for a prompt (remainder will be dedicated to the completion)
-max_prompt_length: 256
+max_prompt_length: 512
 
 activation_checkpointing: true
 
@@ -42,7 +42,7 @@ activation_checkpointing: true
 batch_size: 8
 
 # number of steps to accumulate over for each batch
-gradient_accumulation_steps: 2
+gradient_accumulation_steps: 4
 
 # the batch size during evaluation and sampling, if enabled
 eval_batch_size: 16

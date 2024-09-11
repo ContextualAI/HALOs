@@ -159,6 +159,9 @@ class BasicTrainer(object):
         Arg:
             batch: dictionary of inputs for the batch (what is required will vary depending on the trainer)
             mode: one of 'train', 'eval', 'sample'
+
+        Returns:
+            A tuple of a scalar loss and a dict of metrics.
         """
         raise NotImplementedError
 
@@ -392,11 +395,11 @@ class SFTTrainer(BasicTrainer):
         # Gather losses and logps from all processes
         total_nonzero_elements = self.accelerator.gather((policy_chosen_logps != 0).sum().detach()).sum()
         metrics[f'logps_{mode}/chosen'] = self.accelerator.gather(policy_chosen_logps.detach()).sum() / total_nonzero_elements
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).sum() / total_nonzero_elements
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.sum().detach()).sum() / total_nonzero_elements
 
         del policy_chosen_logits, policy_chosen_logps
 
-        return losses, metrics
+        return losses.sum(), metrics
 
 
 class UnpairedPreferenceTrainer(BasicTrainer):
@@ -448,12 +451,11 @@ class UnpairedPreferenceTrainer(BasicTrainer):
         all_statuses = self.accelerator.gather(combined_statuses.detach())
         chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
         rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
-        all_devices_losses = self.accelerator.gather(losses.detach())
 
         metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
         metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
         metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
-        metrics[f'loss/{mode}'] = all_devices_losses
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
         del policy_chosen_logps, policy_rejected_logps
         del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_devices_losses
@@ -461,7 +463,7 @@ class UnpairedPreferenceTrainer(BasicTrainer):
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
-        return losses, metrics
+        return losses.sum(), metrics
 
 
 class PairedPreferenceTrainer(BasicTrainer):
@@ -536,13 +538,13 @@ class PairedPreferenceTrainer(BasicTrainer):
         metrics[f'rewards_{mode}/margins'] = self.accelerator.gather((chosen_rewards - rejected_rewards).detach())
         metrics[f'logps_{mode}/rejected'] = self.accelerator.gather(policy_rejected_logps.detach())
         metrics[f'logps_{mode}/chosen'] = self.accelerator.gather(policy_chosen_logps.detach())
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach())
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
         del chosen_rewards, rejected_rewards, reward_accuracies, policy_chosen_logps, policy_rejected_logps
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
-        return losses, metrics
+        return losses.sum(), metrics
 
 
 class DPOTrainer(PairedPreferenceTrainer):
@@ -743,12 +745,12 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
         metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
         metrics[f'rewards_{mode}/KL_estimate'] = all_KL
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach())
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
         del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
         del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
-        return losses.mean(), metrics
+        return losses.sum(), metrics
 
 
 class KTOZeroTrainer(UnpairedPreferenceTrainer):

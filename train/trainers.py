@@ -27,6 +27,9 @@ from transformers import AutoTokenizer
 from accelerate import Accelerator
 import contextlib
 
+from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+from peft import PeftModelForCausalLM
+
 from . import dataloader
 from .utils import (
     formatted_dict,
@@ -334,12 +337,19 @@ class BasicTrainer(object):
 
         if self.config.model.use_peft:
             if final_save: # save fully merged model
-                unwrapped_model = unwrapped_model.merge_and_unload()
-                unwrapped_model.save_pretrained(
+                with FSDP.summon_full_params(unwrapped_model):
+                    for name, module in unwrapped_model.named_modules():
+                        if hasattr(module, 'merge'):
+                            try:
+                                module.merge()
+                                print(f"Successfully merged {name}")
+                            except Exception as e:
+                                print(f"Error merging {name}: {e}")
+
+                # After merging, get the base model
+                unwrapped_model.base_model.save_pretrained(
                     output_dir,
                     is_main_process=self.accelerator.is_main_process,
-                    save_function=self.accelerator.save,
-                    state_dict=self.accelerator.get_state_dict(self.policy),
                 )
             else: # only save the lora
                 unwrapped_model.save_pretrained(

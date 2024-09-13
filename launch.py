@@ -8,13 +8,7 @@ Main script for training.
 
 Sample use is:
 
-accelerate launch --config_file accelerate_config.yaml train.py \ 
-    loss=kto model=pythia1-4b \ 
-    datasets=[ultrabin] \ 
-    exp_name=deepspeed_kto \ 
-    mode=train \ 
-    ++cache_dir=/nlp/scr2/kawin/models \ 
-    ++model.from_checkpoint=/nlp/scr/kawin/models/deepspeed_kto/step-64
+accelerate launch --config_file fsdp_config.yaml --main_process_port 29501 launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8B-kto-default mode=train ++cache_dir=/nlp/scr2/kawin/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B
 
 where
 - loss should have a file under config/loss that specifies the trainer in trainers.py and dataloader in dataloader.py

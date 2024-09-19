@@ -124,7 +124,7 @@ def get_alpacaeval(split: str, human_prefix: str, human_suffix: str, assistant_p
     return data
 
 
-def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:
+def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str, seed: int=0) -> Dataset:
     """
     Load the Stanford Human Preferences dataset from Huggingface and convert it into to a Dataset.
 
@@ -179,7 +179,7 @@ def get_shp(split: str, human_prefix: str, human_suffix: str, assistant_prefix: 
     # prevent over-fitting
     if split == 'train':
         for prompt in data:
-            data[prompt].pairs = random.sample(data[prompt].pairs, min(MAX_PAIRS_PER_PROMPT, len(data[prompt].pairs)))
+            data[prompt].pairs = random.Random(seed).sample(data[prompt].pairs, min(MAX_PAIRS_PER_PROMPT, len(data[prompt].pairs)))
 
     return data
 
@@ -412,8 +412,7 @@ class DataLoader:
                  **kwargs):
         
         torch.manual_seed(seed)
-        random.seed(seed)
-
+        self.seed = seed
         self.tokenizer = tokenizer
         self.control_tokens = control_tokens
         self.split = split
@@ -574,7 +573,7 @@ class SFTDataLoader(DataLoader):
     def __iter__(self):
         flat_data = []
         prompts = list(self.full_data.keys())
-        random.shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
 
         for prompt in prompts:
             flat_data.append(self.full_data[prompt])
@@ -585,7 +584,7 @@ class SFTDataLoader(DataLoader):
         
         while True:
             if done: break
-            random.shuffle(flat_data)
+            random.Random(self.seed + epoch_idx).shuffle(flat_data)
 
             batch = []
 
@@ -644,7 +643,7 @@ class ConditionalSFTDataLoader(DataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for i,j in example.pairs:
                 flat_data.append((example, example.generations[i], 'chosen'))
@@ -654,7 +653,7 @@ class ConditionalSFTDataLoader(DataLoader):
     
     def __iter__(self):
         prompts = list(self.full_data.keys()) 
-        random.shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
         flat_data = self.get_flat_data(prompts)
       
         epoch_idx = 0
@@ -663,7 +662,7 @@ class ConditionalSFTDataLoader(DataLoader):
         
         while True:
             if done: break
-            random.shuffle(flat_data)
+            random.Random(self.seed + epoch_idx).shuffle(flat_data)
 
             batch = []
 
@@ -704,13 +703,13 @@ class SimpleKTODataLoader(DataLoader):
     def __iter__(self):
         flat_data = []
         prompts = list(self.full_data.keys()) 
-        random.shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
 
         for prompt in prompts:
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for i,j in example.pairs:
                 flat_data.append((example, example.generations[i], 'chosen'))
@@ -722,7 +721,7 @@ class SimpleKTODataLoader(DataLoader):
 
         while True:
             if done: break
-            random.shuffle(flat_data)   # so generations in the same preference are not in the same batch
+            random.Random(self.seed + epoch_idx).shuffle(flat_data)   # so generations in the same preference are not in the same batch
             batch = []
 
             chosen_example_queue, rejected_example_queue = [], [] 
@@ -787,7 +786,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for i,j in example.pairs:
                 if seen_desirable < allowed_desirable:
@@ -801,8 +800,8 @@ class UnpairedPreferenceDataLoader(DataLoader):
         return flat_data
 
     def __iter__(self):
-        prompts = list(self.full_data.keys()) 
-        random.shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        prompts = sorted(list(self.full_data.keys()))
+        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
         flat_data = self.get_flat_data(prompts)
 
         epoch_idx = 0
@@ -811,7 +810,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
 
         while True:
             if done: break
-            random.shuffle(flat_data)   # so generations in the same preference are not in the same batch
+            random.Random(self.seed + epoch_idx).shuffle(flat_data)   # so generations in the same preference are not in the same batch
             batch = []
             example_queue = []
 
@@ -866,7 +865,7 @@ class ScoreUnaryDataLoader(UnpairedPreferenceDataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             # for oasst, lower scores are better, so rank 0 is the best response and rank n is the worst
             if prev_status == 'rejected':
@@ -897,7 +896,7 @@ class PrefUnaryDataLoader(UnpairedPreferenceDataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for i,j in example.pairs:
                 if prev_status == 'rejected':
@@ -918,13 +917,13 @@ class PairedPreferenceDataLoader(DataLoader):
     def __iter__(self):
         flat_data = []
         prompts = list(self.full_data.keys())
-        random.shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
 
         for prompt in prompts:
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for pair in example.pairs:
                 flat_data.append((example, pair))
@@ -935,7 +934,7 @@ class PairedPreferenceDataLoader(DataLoader):
 
         while True:
             if done: break
-            random.shuffle(flat_data)
+            random.Random(self.seed + epoch_idx).shuffle(flat_data)
             batch = []
 
             for example, (i,j) in flat_data:

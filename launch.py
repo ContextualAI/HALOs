@@ -23,7 +23,7 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn as nn
 from train.utils import disable_dropout
-from train.models import AutoModelForCausalLMWithValueHead
+from train.models import AutoModelForCausalLMWithValueHead, ReferenceModelWrapper
 from train import trainers
 from train import dataloader
 import os
@@ -100,6 +100,80 @@ def main(config: DictConfig):
     control_tokens = list(config.loss.get("control_tokens", {}).values())
     num_added = tokenizer.add_special_tokens({"additional_special_tokens": control_tokens})
 
+    # Create data loaders
+    accelerator.print(f'Loading data')
+    data_loader_class = getattr(dataloader, config.loss.dataloader)
+    data_iterator_kwargs = dict(
+        max_length=config.model.max_length,
+        max_prompt_length=config.model.max_prompt_length,
+        human_prefix=config.human_prefix,
+        human_suffix=config.human_suffix,
+        assistant_prefix=config.assistant_prefix,
+        assistant_suffix=config.assistant_suffix,
+        seed=config.seed,
+        frac_unique_desirable=config.frac_unique_desirable,
+        frac_unique_undesirable=config.frac_unique_undesirable,
+        control_tokens=config.loss.get("control_tokens", {}),
+    )
+    train_iterator = data_loader_class(
+        config.datasets, 
+        tokenizer,
+        split='train',
+        batch_size=config.model.batch_size,
+        n_epochs=config.n_epochs,
+        n_examples=config.n_examples,
+        **data_iterator_kwargs
+    )
+    eval_iterator = data_loader_class(
+        config.datasets, 
+        tokenizer,
+        split='test',
+        batch_size=config.model.eval_batch_size,
+        n_examples=config.n_eval_examples, 
+        n_epochs=(1 if config.n_eval_examples is None else None),
+        **data_iterator_kwargs
+    )
+
+    # Building reference
+    if config.loss.use_reference_model:
+        reference_cls = globals()[config.loss.reference_hf_model_class]
+        reference_kwargs = {
+            'torch_dtype': getattr(torch, config.model.reference_dtype),
+            'attn_implementation' : config.model.attn_implementation if config.model.policy_dtype in ["float16", "bfloat16"] else "eager",
+        }
+        reference_path = config.model.load_from or config.model.name_or_path
+        accelerator.print(f'Loading reference model from {reference_path}')
+        reference_model = reference_cls.from_pretrained(reference_path, **reference_kwargs)
+
+        if config.model.activation_checkpointing: 
+            reference_model.gradient_checkpointing_enable()
+
+        if num_added:
+            reference_model.resize_token_embeddings(len(tokenizer))
+
+        reference_model.eval()
+
+        if config.cache_reference_logprobs:
+            reference_accelerator = Accelerator(
+                project_dir=config.local_run_dir,
+                gradient_accumulation_steps=config.model.gradient_accumulation_steps,
+                kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)]
+            )
+
+            if config.use_fsdp and reference_accelerator.state.fsdp_plugin is not None:
+                reference_accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
+
+            reference_accelerator.print("precomputing logprobs ...")
+            reference_model = ReferenceModelWrapper(
+                reference_accelerator, 
+                reference_model, 
+                tokenizer, 
+                config, 
+                iterators=[train_iterator, eval_iterator],
+            )
+    else:
+        reference_model = None
+
     # Building policy
     policy_cls = globals()[config.loss.policy_hf_model_class]
     policy_kwargs = {
@@ -143,65 +217,10 @@ def main(config: DictConfig):
     else:
         peft_config = None
 
-    # Building reference
-    if config.loss.use_reference_model:
-        reference_cls = globals()[config.loss.reference_hf_model_class]
-        reference_kwargs = {
-            'torch_dtype': getattr(torch, config.model.reference_dtype),
-            'attn_implementation' : config.model.attn_implementation if config.model.policy_dtype in ["float16", "bfloat16"] else "eager",
-        }
-        reference_path = config.model.load_from or config.model.name_or_path
-        accelerator.print(f'Loading reference model from {reference_path}')
-        reference_model = reference_cls.from_pretrained(reference_path, **reference_kwargs)
-
-        if config.model.activation_checkpointing: 
-            reference_model.gradient_checkpointing_enable()
-
-        if num_added:
-            reference_model.resize_token_embeddings(len(tokenizer))
-
-        reference_model.eval()
-    else:
-        reference_model = None
-
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")
     optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr)
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (config.warmup_steps + 1)))
-
-    # Create data loaders
-    accelerator.print(f'Loading data')
-    data_loader_class = getattr(dataloader, config.loss.dataloader)
-    data_iterator_kwargs = dict(
-        max_length=config.model.max_length,
-        max_prompt_length=config.model.max_prompt_length,
-        human_prefix=config.human_prefix,
-        human_suffix=config.human_suffix,
-        assistant_prefix=config.assistant_prefix,
-        assistant_suffix=config.assistant_suffix,
-        seed=config.seed,
-        frac_unique_desirable=config.frac_unique_desirable,
-        frac_unique_undesirable=config.frac_unique_undesirable,
-        control_tokens=config.loss.get("control_tokens", {}),
-    )
-    train_iterator = data_loader_class(
-        config.datasets, 
-        tokenizer,
-        split='train',
-        batch_size=config.model.batch_size,
-        n_epochs=config.n_epochs,
-        n_examples=config.n_examples,
-        **data_iterator_kwargs
-    )
-    eval_iterator = data_loader_class(
-        config.datasets, 
-        tokenizer,
-        split='test',
-        batch_size=config.model.eval_batch_size,
-        n_examples=config.n_eval_examples, 
-        n_epochs=(1 if config.n_eval_examples is None else None),
-        **data_iterator_kwargs
-    )
 
     if config.model.from_checkpoint:
         optimizer_state = optimizer.state_dict()

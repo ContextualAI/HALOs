@@ -52,7 +52,7 @@ trainer: BasicTrainer
 ## TRAINING SETTINGS
 
 # the learning rate
-lr: 5e-6
+lr: 5e-7
 
 # the number of epochs to train for; if null, must specify n_examples
 n_epochs: 1
@@ -68,6 +68,12 @@ warmup_steps: 150
 
 # evaluate and save model every eval_every steps
 eval_every: 1000
+
+# cache log probabilities of reference model
+cache_reference_logprobs: true
+
+# load previously cached log probabilities of reference model
+load_reference_logprobs: null
 
 
 ### EVALUATION SETTINGS

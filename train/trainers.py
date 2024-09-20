@@ -104,6 +104,7 @@ class BasicTrainer(object):
 
     def get_batch_logps(self, logits: torch.FloatTensor, labels: torch.LongTensor):
         """Compute the token-level log probabilities of the given labels under the given logits."""
+        # ignoring vocab size, batch size x length should be equal
         assert logits.shape[:-1] == labels.shape
 
         labels = labels[:, 1:].clone()
@@ -414,20 +415,24 @@ class SFTTrainer(BasicTrainer):
 
 class UnpairedPreferenceTrainer(BasicTrainer):
     """A trainer for any loss that doesn't use paired preference, like KTO."""
-    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.BoolTensor]:
+    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.BoolTensor]:
         """Run the given model on the given batch of inputs.
         
         Returns:
-            chosen_logps: log probabilities of chosen examples (should be batch size / 2 if data was read in correctly)
-            rejected_logps: log probabilities of rejected examples (should be batch size / 2 if data was read in correctly)
+            chosen_logps: log probabilities of chosen examples 
+            rejected_logps: log probabilities of rejected examples
+            use_cache: if true, expecte to get cached logprobs from the model
         """
         with self.accelerator.autocast():
-            all_logits = model(
-                batch['target_combined_input_ids'], 
-                attention_mask=batch['target_combined_attention_mask'],
-            ).logits.to(self.policy_dtype)
-        
-            all_logps = self.get_batch_logps(all_logits, batch['target_labels'])
+            if use_cache:
+                all_logps = model(batch['target_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+            else:
+                all_logits = model(
+                    batch['target_combined_input_ids'], 
+                    attention_mask=batch['target_combined_attention_mask'],
+                ).logits.to(self.policy_dtype)
+            
+                all_logps = self.get_batch_logps(all_logits, batch['target_labels'])
 
         assert all_logps.shape[0] == len(batch['status'])
         chosen_idx = [i for i in range(all_logps.shape[0]) if batch['status'][i] == 'chosen']
@@ -449,7 +454,7 @@ class UnpairedPreferenceTrainer(BasicTrainer):
         else:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
             with torch.no_grad():
-                reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch)
+                reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
             losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
         # all_gather treats empty lists/tensors poorly, and empty lists can occur because a batch can contain all chosen or all rejected example
@@ -507,19 +512,27 @@ class PairedPreferenceTrainer(BasicTrainer):
 
         return concatenated_batch
 
-    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs, concatenating the chosen and rejected inputs together.
            Return two tensors of shape (batch size), one of the chosen examples, another of the rejected ones.
+
+           Returns:
+            chosen_logps: log probabilities of chosen examples 
+            rejected_logps: log probabilities of rejected examples 
+            use_cache: if true, expecte to get cached logprobs from the model
         """
         with self.accelerator.autocast():
             concatenated_batch = self.concatenated_inputs(batch)
 
-            all_logits = model(
-                concatenated_batch['concatenated_combined_input_ids'], 
-                attention_mask=concatenated_batch['concatenated_combined_attention_mask'],
-            ).logits.to(self.policy_dtype)
-            
-            all_logps = self.get_batch_logps(all_logits, concatenated_batch['concatenated_labels'])
+            if use_cache:
+                all_logps = model(batch['concatenated_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+            else:
+                all_logits = model(
+                    concatenated_batch['concatenated_combined_input_ids'], 
+                    attention_mask=concatenated_batch['concatenated_combined_attention_mask'],
+                ).logits.to(self.policy_dtype)
+                
+                all_logps = self.get_batch_logps(all_logits, concatenated_batch['concatenated_labels'])
         
         chosen_logps = all_logps[:batch['chosen_combined_input_ids'].shape[0], ...]
         rejected_logps = all_logps[batch['chosen_combined_input_ids'].shape[0]:, ...]
@@ -536,7 +549,7 @@ class PairedPreferenceTrainer(BasicTrainer):
         else:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
             with torch.no_grad():
-                reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch)
+                reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
             losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
         # accuracy calculated on paired examples (for apples-to-apples comparison with UnpairedPreferenceTrainer)
@@ -688,12 +701,13 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach(), KL.detach()
     
-    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]]) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.
         
         Args:
             - model: the model to use for the forward pass
             - batch: the microbatch (should have the input ids, attention mask, and labels)
+            - use_cache: if true, can get cached logprobs instead
 
         Returns:
             chosen_logps: log probabilities of chosen examples (should be batch size / 2 if data was read in correctly)
@@ -702,19 +716,25 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         """
         with self.accelerator.autocast():
             with torch.no_grad():
-                KL_logits = model(
-                    batch[f'KL_combined_input_ids'],
-                    attention_mask=batch[f'KL_combined_attention_mask']
+                if use_cache:
+                    KL_logps = model(batch[f'KL_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+                else:
+                    KL_logits = model(
+                        batch[f'KL_combined_input_ids'],
+                        attention_mask=batch[f'KL_combined_attention_mask']
+                    ).logits.to(self.policy_dtype)
+
+                    KL_logps = self.get_batch_logps(KL_logits, batch[f'KL_labels'])
+
+            if use_cache:
+                target_logps = model(batch[f'target_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+            else:
+                target_logits = model(
+                    batch[f'target_combined_input_ids'],
+                    attention_mask=batch[f'target_combined_attention_mask']
                 ).logits.to(self.policy_dtype)
 
-                KL_logps = self.get_batch_logps(KL_logits, batch[f'KL_labels'])
-
-            target_logits = model(
-                batch[f'target_combined_input_ids'],
-                attention_mask=batch[f'target_combined_attention_mask']
-            ).logits.to(self.policy_dtype)
-
-            target_logps = self.get_batch_logps(target_logits, batch[f'target_labels'])
+                target_logps = self.get_batch_logps(target_logits, batch[f'target_labels'])
 
         assert target_logps.shape[0] == len(batch['status'])
         chosen_idx = [i for i in range(target_logps.shape[0]) if batch['status'][i] == 'chosen']
@@ -731,7 +751,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
         policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
         with torch.no_grad():
-            reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch)
+            reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
         
         losses, chosen_rewards, rejected_rewards, KL = self.loss(
             policy_chosen_logps,
@@ -830,7 +850,7 @@ class PPOTrainer(BasicTrainer):
             self.scheduler
         )
 
-    def forward(self, model: AutoModelForCausalLMWithValueHead, batch: Dict[str, Union[List, torch.LongTensor]], is_policy: bool=True) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+    def forward(self, model: AutoModelForCausalLMWithValueHead, batch: Dict[str, Union[List, torch.LongTensor]], is_policy: bool=True, use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.
 
         Args:
@@ -838,6 +858,7 @@ class PPOTrainer(BasicTrainer):
             batch: input batch (forward pass will be run on keys with prefix 'chosen')
             masks: binary-valued tensor shape (batch size, sequence length)
             is_policy: whether the model is the policy or reference
+            use_cache: if true, expecte to get cached logprobs from the model
 
         Returns: 
             all_logps: batch log probabilities at the token level of shape (batch size, sequence length)
@@ -849,9 +870,12 @@ class PPOTrainer(BasicTrainer):
             # the 'status' field contains the actual status of the generations
             all_logits, _, all_values = model(batch['target_combined_input_ids'], attention_mask=batch['target_combined_attention_mask'])
             all_values = all_values[:, :-1].contiguous()
-        else:
-            all_logits = model(batch['target_combined_input_ids'], attention_mask=batch['target_combined_attention_mask']).logits.to(self.policy_dtype)
-            all_values = None
+        else: # if reference
+            if use_cache:
+                all_logps = model(batch['target_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+            else:
+                all_logits = model(batch['target_combined_input_ids'], attention_mask=batch['target_combined_attention_mask']).logits.to(self.policy_dtype)
+                all_values = None
 
         all_logps = self.get_batch_logps(all_logits.to(self.policy_dtype), batch['target_labels'])
         # Returned tensors will have sequence length that is one less than the inputs (to account for label shifting).

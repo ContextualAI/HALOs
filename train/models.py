@@ -9,15 +9,17 @@ This code is largely from the TRL library, with some modifications to ensure sta
 """
 import json
 import os
+import pickle
 from copy import deepcopy
 
 import torch
 import torch.nn as nn
+from torch.nn.utils.rnn import pad_sequence
 from huggingface_hub import hf_hub_download
 from transformers import PreTrainedModel, AutoModelForCausalLM
-
-
-LAYER_PATTERNS = ["transformer.h.{layer}", "model.decoder.layers.{layer}", "gpt_neox.layers.{layer}"]
+from accelerate.utils import gather_object
+from tqdm import tqdm
+from typing import Dict, Any, Tuple
 
 
 class PreTrainedModelWrapper(nn.Module):
@@ -414,3 +416,128 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
             model_with_value_head.v_head.load_state_dict(state_dict['state'])
 
         return model_with_value_head
+
+
+class ReferenceModelWrapper(nn.Module):
+    """
+    A wrapper around the reference model that precomputes the logprobs and saves them in a local dict,
+    after which the reference model and accelerator are deleted to save GPU memory.
+
+    Note that the wrapper returns the logprobs of the sequence, not the logits (like the underlying
+    model would).
+    """
+    def __init__(self, reference_accelerator, reference_model, tokenizer, config, iterators):
+        """
+        Args:
+            - reference_accelerator: accelerator that should be used for caching (different from main accelerator)
+            - reference_model: reference model
+            - tokenizer: instance of AutoTokenizer
+            - config: Hydra config
+            - iterators: list of iterators, each instantiated by calling iter on a dataloader.DataLoader
+        """
+        super().__init__()
+        self.reference_accelerator = reference_accelerator
+        self.num_processes = reference_accelerator.num_processes 
+        self.reference_model = reference_model
+        self.reference_dtype = getattr(torch, config.model.reference_dtype)
+        self.tokenizer = tokenizer
+        self.iterators = iterators
+        self.config = config
+
+        self.reference_model, self.tokenizer, self.iterators = reference_accelerator.prepare(
+            self.reference_model,
+            self.tokenizer,
+            self.iterators
+        )
+
+        self.logprobs = {}
+
+        if config.load_reference_logprobs:
+            self.logprobs = pickle.load(open(config.load_reference_logprobs, 'rb'))
+        else:
+            self._precompute_log_probs()
+
+        self._free_memory() # delete the reference model and the accelerator to free up memory
+
+    def _precompute_log_probs(self):
+        """
+        Calculate the log probabilities of every input-output sequence in every iterator in self.iterators.
+        Save these in self.logprobs as the values, where the key is the sequence of token ids (as a tuple, not a list).
+        These are then saved to 'cached_ref_logprobs.json' in the run directory.
+        """
+        self.reference_model.eval()
+        logprobs = []
+        example_counter = 0
+        
+        pbar = tqdm(disable=not self.reference_accelerator.is_local_main_process, dynamic_ncols=True)
+        pbar.set_description(f"Caching logprobs for reference model")
+
+        with torch.no_grad():
+            for data_iterator in self.iterators:
+                for batch in data_iterator:
+                    batch = {k: v.to(self.reference_accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    
+                    # should be 'target', 'KL' for KTO and just 'target' for everything els
+                    prefixes = [ k[:k.index('_')] for k in batch if k.endswith('_combined_input_ids') ]
+
+                    for prefix in prefixes:
+                        logits = self.reference_model(
+                            batch[f'{prefix}_combined_input_ids'], 
+                            attention_mask=batch[f'{prefix}_combined_attention_mask']
+                        ).logits.to(self.reference_dtype)
+
+                        batch_logprobs = self._compute_log_probs(logits, batch[f'{prefix}_labels']).tolist()
+
+                        for k,v in zip(batch[f'{prefix}_combined_input_ids'].tolist(), batch_logprobs):
+                            logprobs.append((tuple(k), v))
+                    
+                    example_counter += self.config.model.batch_size
+                    pbar.update(self.config.model.batch_size)
+                    pbar.set_postfix(examples=example_counter)
+
+        self.reference_accelerator.wait_for_everyone()
+        pbar.close()
+
+        # Gather dictionaries from all processes
+        gathered_logprobs = gather_object(logprobs)
+        self.logprobs = dict(gathered_logprobs)
+
+        if self.reference_accelerator.is_main_process:
+            with open(os.path.join(self.config.local_run_dir, 'cached_reference_logprobs.pkl'), 'wb') as f:
+                pickle.dump(self.logprobs, f) 
+
+    def _compute_log_probs(self, logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """Compute the token-level log probabilities of the given labels under the given logits."""
+        # ignoring vocab size, batch size x length should be equal
+        assert logits.shape[:-1] == labels.shape
+
+        labels = labels[:, 1:].clone()
+        logits = logits[:, :-1, :]
+        loss_mask = (labels != -100)
+
+        # dummy token; we'll ignore the losses on these tokens later
+        labels[labels == -100] = 0
+
+        distribution_logps = logits.float().log_softmax(-1)
+        per_token_logps = torch.gather(distribution_logps, dim=2, index=labels.unsqueeze(2)).squeeze(2)
+
+        return per_token_logps * loss_mask
+    
+    def _free_memory(self):
+        del self.reference_accelerator
+        del self.reference_model
+        torch.cuda.empty_cache()
+
+    def forward(self, input_ids: Dict[str, Any], *args, **kwargs) -> torch.Tensor:
+        """
+        Return the cached log probabilities for the given input ids.
+        """
+        batch_logprobs = [ torch.Tensor(self.logprobs[tuple(k)]) for k in input_ids.tolist() ]
+        batch_logprobs = pad_sequence(batch_logprobs, batch_first=True, padding_value=0)
+        return batch_logprobs
+
+    def __call__(self, *args, **kwargs):
+        return self.forward(*args, **kwargs)
+    
+    def eval(self):
+        pass # pass through, allows wrapper to be treated like a neural network

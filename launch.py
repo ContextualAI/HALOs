@@ -97,6 +97,15 @@ def main(config: DictConfig):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
+    # Check if the tokenizer has a chat template and set a default one if it doesn't
+    if not hasattr(tokenizer, 'chat_template') or tokenizer.chat_template is None:
+        accelerator.print("No chat template found. Setting a default template.")
+
+        with open("template.jinja") as f:
+            tokenizer.chat_template = f.read()
+        
+        accelerator.print("Default chat template set.")
+
     control_tokens = list(config.loss.get("control_tokens", {}).values())
     num_added = tokenizer.add_special_tokens({"additional_special_tokens": control_tokens})
 
@@ -106,10 +115,6 @@ def main(config: DictConfig):
     data_iterator_kwargs = dict(
         max_length=config.model.max_length,
         max_prompt_length=config.model.max_prompt_length,
-        human_prefix=config.human_prefix,
-        human_suffix=config.human_suffix,
-        assistant_prefix=config.assistant_prefix,
-        assistant_suffix=config.assistant_suffix,
         seed=config.seed,
         frac_unique_desirable=config.frac_unique_desirable,
         frac_unique_undesirable=config.frac_unique_undesirable,

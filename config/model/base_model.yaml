@@ -41,7 +41,7 @@ activation_checkpointing: true
 # the total batch size for training; for FSDP, divide by number of devices to get microbatch size
 batch_size: 8
 # number of steps to accumulate over for each batch; effective batch size should be 32 for best results
-gradient_accumulation_steps: 1
+gradient_accumulation_steps: 4
 
 # the batch size during evaluation and sampling, if enabled
 eval_batch_size: 16

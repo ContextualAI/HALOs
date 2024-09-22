@@ -2,8 +2,8 @@
 {% set add_generation_prompt = false %}
 {% endif %}
 {% for message in messages %}
-{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' + '\n'}}
-{% endfor %}
-{% if add_generation_prompt %}
-{{ '<|im_start|>assistant' }}
-{% endif %}"
+{{ '<|im_start|>' + message['role'] + '\n' + message['content'] + '<|im_end|>' }}
+{%- endfor %}
+{%- if add_generation_prompt %}
+{{ '\n<|im_start|>assistant' }}
+{% endif %}

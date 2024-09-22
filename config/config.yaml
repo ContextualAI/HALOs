@@ -96,22 +96,6 @@ top_p: 0.95
 
 ### DATALOADER SETTINGS
 
-# label to use for the human turns in chat datasets (should NOT end in space)
-# NOTE: use double-quotes to express arbitrary strings, not single quotes
-human_prefix: "\n<|user|>\n"
-
-# label to use for the assistant turns in chat datasets (should NOT end in space)
-# NOTE: use double-quotes to express arbitrary strings, not single quotes
-assistant_prefix: "\n<|assistant|>\n"
-
-# used to mark end of human turn (empty by default)
-# NOTE: use double-quotes to express arbitrary strings, not single quotes
-human_suffix: ""
-
-# use to mark end of assistant turn (empty by default)
-# NOTE: use double-quotes to express arbitrary strings, not single quotes
-assistant_suffix: ""
-
 # what fraction of undesirable generations should be kept
 # e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away
 # this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form

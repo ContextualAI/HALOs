@@ -98,12 +98,10 @@ def main(config: DictConfig):
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
     # Check if the tokenizer has a chat template and set a default one if it doesn't
-    if not hasattr(tokenizer, 'chat_template') or tokenizer.chat_template is None:
-        accelerator.print("No chat template found. Setting a default template.")
-
+    if not tokenizer.chat_template:
         with open("template.jinja") as f:
             tokenizer.chat_template = f.read()
-        
+    
         accelerator.print("Default chat template set.")
 
     control_tokens = list(config.loss.get("control_tokens", {}).values())

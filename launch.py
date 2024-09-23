@@ -97,15 +97,18 @@ def main(config: DictConfig):
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 
+    special_tokens = []
     # Check if the tokenizer has a chat template and set a default one if it doesn't
     if not tokenizer.chat_template:
         with open("template.jinja") as f:
             tokenizer.chat_template = f.read()
-    
+
         accelerator.print("Default chat template set.")
 
     control_tokens = list(config.loss.get("control_tokens", {}).values())
-    num_added = tokenizer.add_special_tokens({"additional_special_tokens": control_tokens})
+    special_tokens.extend(control_tokens)
+
+    num_tokens_added = tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
 
     # Create data loaders
     accelerator.print(f'Loading data')
@@ -151,7 +154,7 @@ def main(config: DictConfig):
         if config.model.activation_checkpointing: 
             reference_model.gradient_checkpointing_enable()
 
-        if num_added:
+        if num_tokens_added:
             reference_model.resize_token_embeddings(len(tokenizer))
 
         reference_model.eval()
@@ -191,7 +194,7 @@ def main(config: DictConfig):
     if config.model.activation_checkpointing:
         policy.gradient_checkpointing_enable()
 
-    if num_added:
+    if num_tokens_added:
         policy.resize_token_embeddings(len(tokenizer))
 
     if config.model.use_peft:

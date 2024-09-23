@@ -471,6 +471,8 @@ class DataLoader:
 
         tokenized_prompt_string = self.tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
         tokenized_prompt = self.tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=True)
+        if tokenized_prompt[-1] in [self.tokenizer.eos_token_id, self.tokenizer.pad_token_id]:
+            tokenized_prompt.pop()
         
         tokenized_prompt_and_generation_string = self.tokenizer.apply_chat_template(conversation + [{"role": "assistant", "content": generation}], tokenize=False, add_generation_prompt=False)
         tokenized_prompt_and_generation = self.tokenizer.apply_chat_template(

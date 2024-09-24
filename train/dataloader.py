@@ -353,6 +353,38 @@ def get_ultrabin(split: str) -> Dataset:
     return data
 
 
+def get_ultrafeedback_hybrid(split: str) -> Dataset:
+    rank0_print(f'Loading ultrafeedback_hybrid dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('wzhouad/gemma-2-ultrafeedback-hybrid', split=split)
+    if on_rank0():
+        dataset = tqdm.tqdm(dataset, desc='Processing ultrafeedback hybrid')
+
+    data = Dataset('ultrafeedback_hybrid')
+
+    for row in dataset:
+        # Convert the prompt into the new format
+        conversation = [{"role": "user", "content": row['prompt']}]
+
+        # Get the chosen and rejected responses
+        chosen_response = row['chosen'][-1]['content']
+        rejected_response = row['rejected'][-1]['content']
+
+        # Create a unique key for this example (using the prompt)
+        key = row['prompt']
+
+        # Update the dataset
+        data[key].prompt = conversation
+        data[key].generations.extend([chosen_response, rejected_response])
+        i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
+        data[key].pairs.append((i, j))
+        data[key].sft_index = i  # The chosen response is the SFT target
+        data[key].dataset_name = data.name
+        data[key].truncation_mode = 'keep_start'
+        data[key].remove_extra_spaces()
+
+    return data
+
+
 class DataLoader:
     """
     The base data loader class, similar to the one from the DPO repo.

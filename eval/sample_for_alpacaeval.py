@@ -16,6 +16,7 @@ def main(args):
 
     if not tokenizer.chat_template:
         tokenizer.chat_template = open('template.jinja').read()
+        print(f"Applied chat template in template.jinja")
 
     # Set up sampling parameters
     sampling_params = SamplingParams(
@@ -48,8 +49,8 @@ def main(args):
     outputs = []
     for prompt, response in zip(unformatted_prompts, responses):
         output = {
-            "instruction": re.sub(r"<\|(im_start|im_end)\|>", "", prompt),
-            "output": re.sub(r"<\|(im_start|im_end)\|>", "", response.outputs[0].text.strip()),
+            "instruction": re.sub(r"<?\|(im_start|im_end)\|>?", "", prompt),
+            "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", response.outputs[0].text.strip()),
             "generator": args.model_path,
         }
         outputs.append(output)

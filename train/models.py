@@ -459,6 +459,9 @@ class ReferenceModelWrapper(nn.Module):
 
         self._free_memory() # delete the reference model and the accelerator to free up memory
 
+    def _remove_padding(self, token_ids):
+        return [ t for t in token_ids if t not in [ self.tokenizer.bos_token_id, self.tokenizer.pad_token_id, self.tokenizer.eos_token_id ]]
+
     def _precompute_log_probs(self):
         """
         Calculate the log probabilities of every input-output sequence in every iterator in self.iterators.
@@ -489,7 +492,7 @@ class ReferenceModelWrapper(nn.Module):
                         batch_logprobs = self._compute_log_probs(logits, batch[f'{prefix}_labels']).tolist()
 
                         for k,v in zip(batch[f'{prefix}_combined_input_ids'].tolist(), batch_logprobs):
-                            logprobs.append((tuple(k), v))
+                            logprobs.append((tuple(self._remove_padding(k)), v))
                     
                     example_counter += self.config.model.batch_size
                     pbar.update(self.config.model.batch_size)
@@ -532,7 +535,7 @@ class ReferenceModelWrapper(nn.Module):
         """
         Return the cached log probabilities for the given input ids.
         """
-        batch_logprobs = [ torch.Tensor(self.logprobs[tuple(k)]) for k in input_ids.tolist() ]
+        batch_logprobs = [ torch.Tensor(self.logprobs[tuple(self._remove_padding(k))]) for k in input_ids.tolist() ]
         batch_logprobs = pad_sequence(batch_logprobs, batch_first=True, padding_value=0)
         return batch_logprobs
 

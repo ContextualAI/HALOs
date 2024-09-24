@@ -6,11 +6,12 @@ huggingface-cli download winogrande --repo-type dataset
 huggingface-cli download hellaswag --repo-type dataset
 
 lm_eval --model hf \
-    --model_args pretrained="$MODEL_PATH",tokenizer="$MODEL_PATH",parallelize=True \
-    --tasks winogrande \
-    --limit 10 \
-    --batch_size auto \
-    --apply_chat_template
+  --model_args pretrained="$MODEL_PATH",tokenizer="$MODEL_PATH",parallelize=True \
+  --tasks winogrande \
+  --limit 10 \
+  --batch_size auto \
+  --apply_chat_template \
+  --fewshot_as_multiturn
 
 # HumanEval
 accelerate launch eval/bigcode-evaluation-harness/main.py \

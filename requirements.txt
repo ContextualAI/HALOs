@@ -28,11 +28,13 @@ diskcache==5.6.3
 distro==1.9.0
 docker-pycreds==0.4.0
 docopt==0.6.2
+einops==0.8.0
 evaluate==0.4.2
 exceptiongroup==1.2.2
 fastapi==0.112.2
 filelock==3.15.4
 fire==0.6.0
+flash-attn==2.6.3
 fonttools==4.53.1
 frozenlist==1.4.1
 fsspec==2023.9.2

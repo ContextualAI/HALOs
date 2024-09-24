@@ -48,7 +48,7 @@ eval_batch_size: 16
 
 attn_implementation: eager
 
-use_peft: true
+use_peft: false
 
 load_lora_from: null
 

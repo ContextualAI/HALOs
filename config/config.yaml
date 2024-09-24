@@ -70,7 +70,7 @@ warmup_steps: 150
 eval_every: 1000
 
 # cache log probabilities of reference model
-cache_reference_logprobs: true
+cache_reference_logprobs: false
 
 # load previously cached log probabilities of reference model
 load_reference_logprobs: null

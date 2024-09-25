@@ -80,6 +80,7 @@ def main(config: DictConfig):
             config=OmegaConf.to_container(config),
             dir=config.cache_dir,
             name=config.exp_name,
+            mode="offline",
         )
     
         config_path = os.path.join(config.local_run_dir, 'config.yaml')

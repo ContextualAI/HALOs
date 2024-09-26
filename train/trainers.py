@@ -211,6 +211,7 @@ class BasicTrainer(object):
                 mean_eval_metrics[k] = sum(v) / len(v)
 
         delete_dicts(eval_batch, eval_metrics, all_eval_metrics)
+        self.free_memory()
 
         if self.accelerator.is_main_process and self.config.wandb.enabled:
             wandb.log(mean_eval_metrics, step=self.example_counter)
@@ -222,9 +223,6 @@ class BasicTrainer(object):
             'metadata': OmegaConf.to_container(self.config),
             'results': formatted_dict(mean_eval_metrics),
         }
-
-        self.accelerator.free_memory()
-        torch.cuda.empty_cache()
         
         return results
 
@@ -262,7 +260,7 @@ class BasicTrainer(object):
 
             # TRAINING
             self.policy.train()
-
+            accumulated = 0
             start_time = time.time()
             
             with self.accelerator.accumulate(self.policy):
@@ -278,9 +276,7 @@ class BasicTrainer(object):
                 self.optimizer.step()
                 self.scheduler.step()
                 self.optimizer.zero_grad()
-
-                delete_dicts(batch, metrics)
-                self.free_memory_if_needed()
+                accumulated += 1
 
             step_time = time.time() - start_time
             examples_per_second = self.config.model.batch_size / step_time
@@ -304,11 +300,15 @@ class BasicTrainer(object):
                     trigger_sync()
 
                 last_log = time.time()
-
-                delete_dicts(batch_metrics, mean_train_metrics)
                 batch_metrics = defaultdict(list)
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+
+            delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
+
+            if accumulated >= self.config.model.gradient_accumulation_steps:
+                self.free_memory()
+                accumulated = 0
 
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
@@ -372,18 +372,10 @@ class BasicTrainer(object):
 
         self.accelerator.wait_for_everyone()
 
-    def free_memory_if_needed(self):
-        """
-        Free memory if there is under 100 MB of VRAM.
-        """
-        # explicitly empty cache if less than 100MB available
-        r = torch.cuda.memory_reserved(self.accelerator.device)
-        a = torch.cuda.memory_allocated(self.accelerator.device)
-
-        if (r - a) / 1024 < 100:
-            torch.cuda.empty_cache()
-            self.accelerator.free_memory()
-            gc.collect()
+    def free_memory(self):
+        torch.cuda.empty_cache()
+        self.accelerator.free_memory()
+        gc.collect()
 
 
 class SFTTrainer(BasicTrainer):
@@ -643,6 +635,10 @@ class SLiCTrainer(PairedPreferenceTrainer):
 
 
 class KTOTrainer(UnpairedPreferenceTrainer):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.previous_KL = 0
+
     def loss(self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
@@ -673,8 +669,12 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             KL_lengths = (policy_KL_logps != 0).sum(-1).clamp(min=1)
             KL_rewards = KL_rewards * 100 / KL_lengths
 
-        # take mean of the KL estimates across all devices
+        # take mean of the KL estimates across all devices in this step
         KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
+        # interpolate between running average and current batch estimate
+        KL = self.config.loss.KL_decay * self.previous_KL + (1 - self.config.loss.KL_decay) * KL
+        # update moving average
+        self.previous_KL = KL.item()
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))

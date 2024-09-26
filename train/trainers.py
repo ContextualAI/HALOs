@@ -52,9 +52,6 @@ import json
 import functools
 from typing import Optional, Dict, List, Union, Tuple
 
-from wandb_osh.hooks import TriggerWandbSyncHook
-trigger_sync = TriggerWandbSyncHook()
-
 
 class BasicTrainer(object):
     def __init__(self, 
@@ -215,7 +212,6 @@ class BasicTrainer(object):
 
         if self.accelerator.is_main_process and self.config.wandb.enabled:
             wandb.log(mean_eval_metrics, step=self.example_counter)
-            trigger_sync()
         else:
             results = None
 
@@ -297,7 +293,6 @@ class BasicTrainer(object):
 
                 if self.config.wandb.enabled and self.accelerator.is_main_process:
                     wandb.log(mean_train_metrics, step=self.example_counter)
-                    trigger_sync()
 
                 last_log = time.time()
                 batch_metrics = defaultdict(list)
@@ -1048,7 +1043,6 @@ class PPOTrainer(BasicTrainer):
 
         if self.accelerator.is_main_process and self.config.wandb.enabled:
             wandb.log(mean_eval_metrics, step=self.example_counter)
-            trigger_sync()
         else:
             results = None
 
@@ -1138,7 +1132,6 @@ class PPOTrainer(BasicTrainer):
 
                 if self.config.wandb.enabled and self.accelerator.is_main_process:
                     wandb.log(mean_train_metrics, step=self.example_counter)
-                    trigger_sync()
 
                 last_log = time.time()
 

@@ -6,8 +6,11 @@ from typing import List, Dict
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 from train.dataloader import SFTDataLoader
+from train.utils import set_offline_if_needed
 
 def main(args):
+    set_offline_if_needed()
+    
     # Load the model and tokenizer
     print(f"Loading model and tokenizer from {args.model_path}")
     llm = LLM(model=args.model_path, tensor_parallel_size=args.gpu_count)

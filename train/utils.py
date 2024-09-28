@@ -13,6 +13,24 @@ import os
 from typing import Dict, Union, Type, List
 from collections.abc import Mapping
 
+import huggingface_hub
+from huggingface_hub import HfApi, HfFolder
+from huggingface_hub.utils import LocalTokenNotFoundError
+
+
+def set_offline_if_needed():
+    try:
+        token = HfFolder.get_token()
+        api = HfApi()
+        api.whoami(token)
+
+        os.environ['HF_DATASETS_OFFLINE'] = '0'
+        os.environ['HF_HUB_OFFLINE'] = '0'
+    except huggingface_hub.errors.OfflineModeIsEnabled:
+        print("No valid token found. Falling back to offline mode.")
+        os.environ['HF_DATASETS_OFFLINE'] = '1' 
+        os.environ['HF_HUB_OFFLINE'] = '1'
+
 
 def rank0_print(*args, **kwargs):
     """Print, but only on rank 0."""

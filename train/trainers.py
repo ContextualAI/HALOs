@@ -25,10 +25,9 @@ from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
 
 from accelerate import Accelerator
-import contextlib
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
-from peft import PeftModelForCausalLM
+import torch.distributed as dist
 
 from . import dataloader
 from .utils import (
@@ -51,6 +50,10 @@ import time
 import json
 import functools
 from typing import Optional, Dict, List, Union, Tuple
+
+
+# Disable Sentry and set offline mode
+os.environ['SENTRY_DSN'] = ''
 
 
 class BasicTrainer(object):
@@ -361,11 +364,13 @@ class BasicTrainer(object):
             unwrapped_model.save_pretrained(
                 output_dir,
                 is_main_process=self.accelerator.is_main_process,
-                save_function=self.accelerator.save,
-                state_dict=self.accelerator.get_state_dict(self.policy),
             )
 
         self.accelerator.wait_for_everyone()
+        if dist.is_initialized():
+            dist.destroy_process_group()
+            
+        print("Training completed and resources cleaned up")
 
     def free_memory(self):
         torch.cuda.empty_cache()

@@ -18,6 +18,34 @@ from huggingface_hub import HfApi, HfFolder
 from huggingface_hub.utils import LocalTokenNotFoundError
 
 
+def get_base_model_state_dict_from_peft(peft_state_dict, lora_alpha, lora_r):
+    """
+    Return the state dict for the base model given the state dict for a lora-wrapped 
+    AutoModelForCausalLM, merging the lora weights as needed.
+
+    This helper is needed because automated weight merging does not work with FSDP.
+    """
+    state_dict = {}
+
+    for name in peft_state_dict.keys():
+        if 'lora_A' in name:
+            base_param_name = name.replace('lora_A.default', 'base_layer')
+            
+            lora_a = peft_state_dict[name]
+            lora_b = peft_state_dict[name.replace('lora_A', 'lora_B')]
+            scaling = lora_alpha / lora_r
+
+            new_name = name.replace('lora_A.default.', '').replace('base_model.model.', '')
+            state_dict[new_name] = peft_state_dict[base_param_name] + (lora_b @ lora_a) * scaling
+        elif 'lora_B' in name or 'base_layer' in name:
+            continue
+        else:
+            new_name = name.replace('base_model.model.', '')
+            state_dict[new_name] = peft_state_dict[name]
+
+    return state_dict
+
+
 def set_offline_if_needed():
     try:
         token = HfFolder.get_token()

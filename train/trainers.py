@@ -23,7 +23,6 @@ import gc
 from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
-
 from accelerate import Accelerator
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -38,6 +37,7 @@ from .utils import (
     entropy_from_logits,
     delete_dicts,
     rowwise_product,
+    get_base_model_state_dict_from_peft
 )
 import numpy as np
 import wandb
@@ -50,10 +50,6 @@ import time
 import json
 import functools
 from typing import Optional, Dict, List, Union, Tuple
-
-
-# Disable Sentry and set offline mode
-os.environ['SENTRY_DSN'] = ''
 
 
 class BasicTrainer(object):
@@ -337,40 +333,29 @@ class BasicTrainer(object):
         
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
-        unwrapped_model = self.accelerator.unwrap_model(self.policy)
 
-        if self.config.model.use_peft:
-            if final_save: # save fully merged model
-                with FSDP.summon_full_params(unwrapped_model):
-                    for name, module in unwrapped_model.named_modules():
-                        if hasattr(module, 'merge'):
-                            try:
-                                module.merge()
-                                print(f"Successfully merged {name}")
-                            except Exception as e:
-                                print(f"Error merging {name}: {e}")
-
-                # After merging, get the base model
-                unwrapped_model.base_model.save_pretrained(
-                    output_dir,
-                    is_main_process=self.accelerator.is_main_process,
-                )
-            else: # only save the lora
-                unwrapped_model.save_pretrained(
-                    output_dir,
-                    is_main_process=self.accelerator.is_main_process,
-                )
-        else:            
-            unwrapped_model.save_pretrained(
-                output_dir,
-                is_main_process=self.accelerator.is_main_process,
+        if self.config.model.use_peft and final_save:
+            state_dict = get_base_model_state_dict_from_peft(
+                self.accelerator.get_state_dict(self.policy),
+                self.config.model.peft.lora_alpha,
+                self.config.model.peft.lora_r,
             )
+            unwrapped_model = self.accelerator.unwrap_model(self.policy).base_model
+        else:
+            state_dict = self.accelerator.get_state_dict(self.policy)
+            unwrapped_model = self.accelerator.unwrap_model(self.policy)
 
+        unwrapped_model.save_pretrained(
+            output_dir,
+            is_main_process=self.accelerator.is_main_process,
+            save_function=self.accelerator.save,
+            state_dict=state_dict,
+            safe_serialization=False
+        )
+            
         self.accelerator.wait_for_everyone()
         if dist.is_initialized():
             dist.destroy_process_group()
-            
-        print("Training completed and resources cleaned up")
 
     def free_memory(self):
         torch.cuda.empty_cache()
@@ -1212,29 +1197,25 @@ class PPOTrainer(BasicTrainer):
     
         self.accelerator.wait_for_everyone()
         self.accelerator.print(f"Saving model...")
-        unwrapped_lm = self.accelerator.unwrap_model(self.policy.pretrained_model)
 
-        if self.config.model.use_peft:
-            if final_save: # save the fully merged policy
-                unwrapped_lm = unwrapped_lm.merge_and_unload()
-                unwrapped_lm.save_pretrained(
-                    output_dir,
-                    is_main_process=self.accelerator.is_main_process,
-                    save_function=self.accelerator.save,
-                    state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
-                )
-            else: # only save the lora
-                unwrapped_lm.save_pretrained(
-                    output_dir,
-                    is_main_process=self.accelerator.is_main_process,
-                )
-        else:            
-            unwrapped_lm.save_pretrained(
-                output_dir,
-                is_main_process=self.accelerator.is_main_process,
-                save_function=self.accelerator.save,
-                state_dict=self.accelerator.get_state_dict(self.policy.pretrained_model),
+        if self.config.model.use_peft and final_save:
+            state_dict = get_base_model_state_dict_from_peft(
+                self.accelerator.get_state_dict(self.policy.pretrained_model),
+                self.config.model.peft.lora_alpha,
+                self.config.model.peft.lora_r,
             )
+            unwrapped_model = self.accelerator.unwrap_model(self.policy.pretrained_model).base_model
+        else:
+            state_dict = self.accelerator.get_state_dict(self.policy.pretrained_model)
+            unwrapped_model = self.accelerator.unwrap_model(self.policy.pretrained_model)
+
+        unwrapped_model.save_pretrained(
+            output_dir,
+            is_main_process=self.accelerator.is_main_process,
+            save_function=self.accelerator.save,
+            state_dict=state_dict,
+            safe_serialization=False
+        )
             
         self.accelerator.wait_for_everyone()
 

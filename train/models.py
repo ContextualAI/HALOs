@@ -406,6 +406,10 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         """
         self.pretrained_model.resize_token_embeddings(vocab_size)
 
+    def gradient_checkpointing_enable(self):
+        """Enable gradient chekpointing."""
+        self.pretrained_model.gradient_checkpointing_enable()
+
     @classmethod
     def from_pretrained(cls, load_from, *args, **kwargs):
         pretrained_model = AutoModelForCausalLM.from_pretrained(load_from, *args, **kwargs)

@@ -47,7 +47,7 @@ def main(config: DictConfig):
         raise ValueError(f"Got missing keys in config:\n{missing_keys}")
     
     set_seed(config.seed)
-    
+
     # Initialize Accelerator
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
@@ -191,16 +191,16 @@ def main(config: DictConfig):
     accelerator.print(f'Loading policy from {policy_path}')
     policy = policy_cls.from_pretrained(policy_path, **policy_kwargs)
 
-    if config.model.activation_checkpointing:
-        policy.gradient_checkpointing_enable()
-
     if num_tokens_added:
         policy.resize_token_embeddings(len(tokenizer))
 
     if config.model.use_peft:
+        # if there's a value head, then peft should only be applied to the base model
+        base_model = policy.pretrained_model if config.loss.policy_hf_model_class == 'AutoModelForCausalLMWithValueHead' else policy
+
         if config.model.load_lora_from:
-            policy = PeftModel.from_pretrained(
-                policy, 
+            peft_model = PeftModel.from_pretrained(
+                base_model, 
                 config.model.load_lora_from, 
                 torch_dtype=getattr(torch, config.model.policy_dtype)
             )
@@ -214,14 +214,22 @@ def main(config: DictConfig):
                 target_modules=config.model.peft.target_modules,
                 inference_mode=False,
             )
-            policy = get_peft_model(policy, peft_config)
+            peft_model = get_peft_model(base_model, peft_config)
 
             # Ensure LoRA layers are in the same dtype as the base model
-            for name, module in policy.named_modules():
+            for name, module in peft_model.named_modules():
                 if 'lora_' in name:
                     module.to(getattr(torch, config.model.policy_dtype))
+
+        if config.loss.policy_hf_model_class == 'AutoModelForCausalLMWithValueHead':
+            policy.pretrained_model = peft_model
+        else:
+            policy = peft_model
     else:
         peft_config = None
+
+    if config.model.activation_checkpointing:
+        policy.gradient_checkpointing_enable()
 
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")

@@ -421,11 +421,13 @@ class DataLoader:
         self.epoch_idx = 0
         self.n_examples = n_examples
         
-        self.full_data = {}
+        self.full_data = {} # a dict of Examples
 
         for name in dataset_names:
             dataset = globals()[f"get_{name}"](split)
             self.full_data.update(dataset.data)
+
+        self.num_training_steps = self.get_num_training_steps()
 
     def collate(self, batch: Dict[str, List]) -> Dict:
         """
@@ -532,6 +534,10 @@ class DataLoader:
     def __iter__(self):
         """Create a flat version of the data and yield batches."""
         raise NotImplementedError
+
+    def get_num_training_steps(self):
+        """Get the number of training steps."""
+        raise NotImplementedError
     
 
 class SFTDataLoader(DataLoader):
@@ -595,6 +601,10 @@ class SFTDataLoader(DataLoader):
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
                 done = True
                 break
+
+    def get_num_training_steps(self):
+        """Get the number of training steps."""
+        return len(self.full_data)
 
 
 class ConditionalSFTDataLoader(DataLoader):
@@ -686,6 +696,17 @@ class ConditionalSFTDataLoader(DataLoader):
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
                 done = True
                 break
+
+    def get_num_training_steps(self):
+        num_training_steps = 0
+
+        for prompt, example in self.full_data.items():
+            if self.max_prompt_count:
+                num_training_steps += min(self.max_prompt_count, len(example.pairs)) * 2
+            else:
+                num_training_steps += len(example.pairs) * 2
+            
+        return num_training_steps
 
 
 class UnpairedPreferenceDataLoader(DataLoader):
@@ -787,6 +808,17 @@ class UnpairedPreferenceDataLoader(DataLoader):
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
                 done = True
                 break
+
+    def get_num_training_steps(self):
+        num_training_steps = 0
+
+        for prompt, example in self.full_data.items():
+            if self.max_prompt_count:
+                num_training_steps += min(self.max_prompt_count, len(example.pairs)) * 2
+            else:
+                num_training_steps += len(example.pairs) * 2
+            
+        return num_training_steps
 
 
 class ScoreUnaryDataLoader(UnpairedPreferenceDataLoader):
@@ -908,3 +940,14 @@ class PairedPreferenceDataLoader(DataLoader):
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
                 done = True
                 break
+
+    def get_num_training_steps(self):
+        num_training_steps = 0
+
+        for prompt, example in self.full_data.items():
+            if self.max_prompt_count:
+                num_training_steps += min(self.max_prompt_count, len(example.pairs))
+            else:
+                num_training_steps += len(example.pairs)
+            
+        return num_training_steps

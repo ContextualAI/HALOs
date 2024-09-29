@@ -35,6 +35,7 @@ from typing import Optional, Set
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 
 def main(config: DictConfig):
@@ -234,7 +235,10 @@ def main(config: DictConfig):
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")
     optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr)
-    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (config.warmup_steps + 1)))
+
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=config.warmup_steps)
+    main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - config.warmup_steps, eta_min=0)
+    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[config.warmup_steps])
 
     if config.model.from_checkpoint:
         optimizer_state = optimizer.state_dict()

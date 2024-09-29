@@ -12,9 +12,8 @@ fsdp_config:
   fsdp_state_dict_type: SHARDED_STATE_DICT
   fsdp_sync_module_states: true
   fsdp_use_orig_params: true
-machine_rank: 0
 main_training_function: main
-num_machines: 1
+num_machines: 2
 num_processes: 8
 rdzv_backend: static
 same_network: true
@@ -22,3 +21,4 @@ tpu_env: []
 tpu_use_cluster: false
 tpu_use_sudo: false
 use_cpu: false
+# don't specify machine rank (that's done by accelerate)

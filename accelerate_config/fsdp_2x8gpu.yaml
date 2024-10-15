@@ -14,7 +14,7 @@ fsdp_config:
   fsdp_use_orig_params: true
 main_training_function: main
 num_machines: 2
-num_processes: 8
+num_processes: 16
 rdzv_backend: static
 same_network: true
 tpu_env: []

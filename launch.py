@@ -198,6 +198,7 @@ def main(config: DictConfig):
     if config.model.use_peft:
         # if there's a value head, then peft should only be applied to the base model
         base_model = policy.pretrained_model if config.loss.policy_hf_model_class == 'AutoModelForCausalLMWithValueHead' else policy
+        base_model.enable_input_require_grads()
 
         if config.model.load_lora_from:
             peft_model = PeftModel.from_pretrained(

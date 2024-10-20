@@ -1,3 +1,4 @@
 outputs/
 wandb/
 __pycache__/
+openai_configs.yaml

@@ -5,7 +5,7 @@ name_or_path: ???
 # the name of the tokenizer to use; if null, will use the tokenizer from the model
 tokenizer_name_or_path: null
 
-# override pre-trained weights from local model (e.g., from SFT); optional, should be the name of the model (e.g., archangel_sft_pythia-1.4b/LATEST/policy.pt)
+# override pre-trained weights from local model (e.g., from SFT); optional, should be the name of the model dir (e.g., archangel_sft_pythia-1.4b/LATEST/)
 load_from: null
 
 # directory containing checkpoint

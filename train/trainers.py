@@ -354,8 +354,6 @@ class BasicTrainer(object):
         )
             
         self.accelerator.wait_for_everyone()
-        if dist.is_initialized():
-            dist.destroy_process_group()
 
     def free_memory(self):
         torch.cuda.empty_cache()

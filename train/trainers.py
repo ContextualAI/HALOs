@@ -558,10 +558,6 @@ class DPOTrainer(PairedPreferenceTrainer):
         chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
         rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
 
-        if self.config.loss.length_normalization:
-            chosen_rewards = chosen_rewards * 100 / (policy_chosen_logps != 0).sum(-1).clamp(min=1)
-            rejected_rewards = rejected_rewards * 100 / (policy_rejected_logps != 0).sum(-1).clamp(min=1)
-
         losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach()
@@ -579,10 +575,6 @@ class CDPOTrainer(PairedPreferenceTrainer):
         chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
         rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
         
-        if self.config.loss.length_normalization:
-            chosen_rewards = chosen_rewards * 100 / (policy_chosen_logps != 0).sum(-1).clamp(min=1)
-            rejected_rewards = rejected_rewards * 100 / (policy_rejected_logps != 0).sum(-1).clamp(min=1)
-
         forward_losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
         reverse_losses = -F.logsigmoid(rejected_rewards - chosen_rewards)
         losses = (1 - self.config.loss.epsilon) * forward_losses + self.config.loss.epsilon * reverse_losses
@@ -644,10 +636,6 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         """
         KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
         
-        if self.config.loss.length_normalization:
-            KL_lengths = (policy_KL_logps != 0).sum(-1).clamp(min=1)
-            KL_rewards = KL_rewards * 100 / KL_lengths
-
         # take mean of the KL estimates across all devices in this step
         KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
         # interpolate between running average and current batch estimate
@@ -657,11 +645,6 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_lengths = (policy_chosen_logps != 0).sum(-1).clamp(min=1)
-
-            if self.config.loss.length_normalization:
-                chosen_rewards = chosen_rewards * 100 / chosen_lengths
-
             chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
@@ -670,11 +653,6 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         
         if policy_rejected_logps.shape[0] != 0:
             rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_lengths = (policy_rejected_logps != 0).sum(-1).clamp(min=1)
-
-            if self.config.loss.length_normalization:
-                rejected_rewards = rejected_rewards * 100 / rejected_lengths
-
             rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
@@ -790,11 +768,6 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
         """
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_lengths = (policy_chosen_logps != 0).sum(-1).clamp(min=1)
-
-            if self.config.loss.length_normalization:
-                chosen_rewards = chosen_rewards * 100 / chosen_lengths
-
             chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - 0))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
@@ -803,11 +776,6 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
         
         if policy_rejected_logps.shape[0] != 0:
             rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_lengths = (policy_rejected_logps != 0).sum(-1).clamp(min=1)
-
-            if self.config.loss.length_normalization:
-                rejected_rewards = rejected_rewards * 100 / rejected_lengths
-
             rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (0 - rejected_rewards))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather

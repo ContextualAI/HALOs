@@ -16,5 +16,3 @@ hf_model_class: AutoModelForCausalLM
 policy_hf_model_class: AutoModelForCausalLM
 
 reference_hf_model_class: AutoModelForCausalLM
-
-length_normalization: false

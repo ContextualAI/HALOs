@@ -7,17 +7,8 @@ exp_name: ???
 # datasets should be specified
 datasets: ???
 
-# mode: one of 'train', 'eval', or 'sample'
-mode: ???
-
 # debug mode (disables wandb, model checkpointing, etc.)
 debug: false
-
-# whether to use FSDP
-use_fsdp: true
-
-# the port to use for FSDP
-fsdp_port: null
 
 # wandb configuration
 wandb:

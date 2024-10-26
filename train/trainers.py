@@ -362,7 +362,7 @@ class BasicTrainer(object):
 
 
 class SFTTrainer(BasicTrainer):
-    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str=None):
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs.
         
         Args:
@@ -371,7 +371,6 @@ class SFTTrainer(BasicTrainer):
             mode: one of 'train', 'eval', 'sample'
         """
         metrics = {}
-        if mode is None: mode = self.config.mode
         
         with self.accelerator.autocast():
             policy_chosen_logits = self.policy(
@@ -422,11 +421,9 @@ class UnpairedPreferenceTrainer(BasicTrainer):
         rejected_logps = all_logps[rejected_idx, ...]
         return chosen_logps, rejected_logps
 
-    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str=None):
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
-        if mode is None: 
-            mode = self.config.mode
 
         if self.reference_model is None:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
@@ -518,10 +515,9 @@ class PairedPreferenceTrainer(BasicTrainer):
         rejected_logps = all_logps[batch['chosen_combined_input_ids'].shape[0]:, ...]
         return chosen_logps, rejected_logps
 
-    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str=None):
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
-        if mode is None: mode = self.config.mode
 
         if self.reference_model is None:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
@@ -732,10 +728,9 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
         return chosen_logps, rejected_logps, KL_logps
     
-    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str=None):
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
-        if mode is None: mode = self.config.mode
 
         policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
         with torch.no_grad():
@@ -1019,7 +1014,7 @@ class PPOTrainer(BasicTrainer):
             global_batch_dict = self.get_global_batch_dict(eval_batch)
 
             with torch.no_grad():
-                _, eval_metrics = self.get_batch_metrics(global_batch_dict, mode='train')
+                _, eval_metrics = self.get_batch_metrics(global_batch_dict, mode='eval')
 
             delete_dicts(eval_batch)
 
@@ -1128,13 +1123,10 @@ class PPOTrainer(BasicTrainer):
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-    def get_batch_metrics(self, global_batch_dict: Dict, batch_size: int=0, mode:str=None):
+    def get_batch_metrics(self, global_batch_dict: Dict, batch_size: int=0, mode:str='train'):
         """
         Given a batch that has been processed in the outer loop of PPO, return the batch statistics and the loss.
         """
-        if mode is None: 
-            mode = self.config.mode
-        
         # for train
         if batch_size:
             indices = torch.randperm(batch_size).tolist()

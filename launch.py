@@ -57,7 +57,7 @@ def main(config: DictConfig):
         kwargs_handlers=[ddp_kwargs]
     )
 
-    if config.use_fsdp and accelerator.state.fsdp_plugin is not None:
+    if accelerator.state.fsdp_plugin is not None:
         accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
     if config.eval_every % config.model.batch_size != 0:
@@ -167,7 +167,7 @@ def main(config: DictConfig):
                 kwargs_handlers=[DistributedDataParallelKwargs(find_unused_parameters=True)]
             )
 
-            if config.use_fsdp and reference_accelerator.state.fsdp_plugin is not None:
+            if reference_accelerator.state.fsdp_plugin is not None:
                 reference_accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
             reference_accelerator.print("precomputing logprobs ...")

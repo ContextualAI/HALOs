@@ -1,70 +1,53 @@
 
 # **H**um**a**n-Centered **Lo**ss Functions (HALOs) :innocent:
 
-This repo allows you to design new **HumAn-centered LOss functions (HALOs)** for aligning LLMs with offline human feedback at scale [(read more in our technical report)](assets/report.pdf).
-It was used to create Archangel, the largest-ever suite of human-feedback-aligned LLMs, and has been tested at scales from 1B to 30B.
+This repo allows you to align LLMs with various methods, such as DPO, KTO, and an offline version of PPO.
+It was originally released with the KTO paper but has since been significantly revised to support LoRAs, logit caching, and easy evaluation (for the original code, see the `legacy' branch of the repo).
 
-This repo draws from the excellently written [DPO repo](https://github.com/eric-mitchell/direct-preference-optimization) and has preserved many design choices from the original.
-Some of the key changes we introduced are:
-- making data loading more modular, so that you can easily write your own dataloader
-- making trainers more modular, so that each HALO has its own trainer subclass
-- adding code for doing open-ended evaluation with GPT-4 as a judge
-- supporting losses beyond SFT and DPO (including KTO, PPO (offline, off-policy variant), and SLiC)
+Compared to alternatives like TRL or Axlotl, HALOs sacrifices some functionality for:
+- modularity: Dataloading, training, and sampling are all separate.
+- extensibility: You can quickly write your own dataloader or implement a new alignment loss.
+- simplicity: The repo is small enough to hack on.
 
-To first SFT a model, run a command like
+It has been tested at scales from 1B to 30B LLMs; an earlier version was used to train the Archangel suite of models on Huggingface.
 
-```python train.py loss=sft model=llama7b datasets=[shp,hh,oasst] exp_name=llama7b_sft mode=train ++cache_dir=/data/models```
+Configs are handled by [Hydra](https://hydra.cc/), jobs are launched with [Accelerate](https://huggingface.co/docs/accelerate/en/index), and all training is done with FSDP by default. To first SFT a model from the Hugginface repo `meta-llama/Meta-Llama-3-8B`, run a command like
 
-which will save a model to `/data/models/llama7b_sft/LATEST/policy.pt`. To then align a model with KTO, run a command like
+```accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py loss=sft model=llama datasets=[ultrabin] exp_name=llama3-8b_sft ++cache_dir=/data/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B ++lr=1e-6```
 
-```python train.py loss=kto model=llama7b datasets=[shp,hh,oasst] exp_name=llama7b_kto mode=train ++cache_dir=/data/models ++model.load_from=llama7b_sft/LATEST/policy.pt```
+which will save a model to `/data/models/llama3-8b_sft/FINAL/`. To then align the SFT model with KTO, run a command like
 
-which will save a model to `/data/models/llama7b_kto/LATEST/policy.pt`.
+```accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8b_sft_kto ++cache_dir=/data/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B ++model.load_from=/data/models/llama3-8b_sft/FINAL/ ++lr=5e-6 ++loss.beta=0.1```
+
+which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 
 
 ## Quickstart
 
-Let's say we want to implement a new HALO called Kahneman-Tversky optimization (KTO).
-This is already implemented in this repo based on the details in our [report](assets/report.pdf), but let's pretend that it's not. 
-What should we do?
+1. First, clone the repo and install the dependencies. This might take a while. The package versions are important---if you change them, there is no guarantee the code will run.
 
-1. First, create and activate the conda environment.
+   ```console
+   . install.sh
+   ```
 
-    `conda env create -f environment.yml`
-   
-    `conda activate halos`
+2. Determine whether you need a new dataset. If you have a dataset that you want to refer to as `foo` when you launch jobs, add a function called `get_foo` to `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where `split` should be either `train` or `test`:
 
-2. Determine whether you need a new dataset. If you have a dataset called `foo`, add a function called `get_foo` to `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where the prefixes and suffixes determine how the dataset is formatted (see `config.yaml`) and `split` should be either `train` or `test`:
+   ```def get_foo(split: str, *args, **kwargs) -> Dataset:```
+    
+   Determine whether you need a new dataloader. Each loss in `config/loss/` has one corresponding dataloader; for KTO, it is `dataloader.UnpairedPreferenceDataLoader`. You will probably not need to write a new dataloader unless you are doing something creative, like turning score-based data into preferences or binary feedback. 
 
-    ```def get_foo(split: str, human_prefix: str, human_suffix: str, assistant_prefix: str, assistant_suffix: str) -> Dataset:```
+3. Determine whether you need a new trainer. In most cases, this will subclass either `UnpairedPreferenceTrainer` (i.e., KTO-style) or `PairedPreferenceTrainer` (i.e., DPO-style). If you need highly custom behavior that is not in either, then you can subclass `BasicTrainer` directly.
 
-4. Determine whether you need a new dataloader. KTO doesn't use preference pairs, just knowledge of whether outputs are desirable or undesirable.
-   This means we use `dataloader.UnpairedPreferenceDataLoader`. However, that dataloader assumes that you're working with datasets that originally contain preference pairs, like Anthropic HH or SHP.
-   If you wanted a custom dataloader, you would implement it in the same Python file by extending the base `DataLoader` class.
-
-5. Write a trainer in `trainers.py`. This should subclass either `UnpairedPreferenceTrainer` or `PairedPreferenceTrainer` depending on whether it uses pairs of preferences or not.
-   If you need highly custom behavior that is not in either, then you can subclass `BasicTrainer` directly.
-
-   We can implement a simple version of KTO as follows (not that this is different from the proper version of KTO in `KTOTrainer`, which does not assume the existence of both chosen and rejected examples in each batch).
-
-   To make SimpleKTOTrainer, we just subclass `trainers.UnpairedPreferenceTrainer` as `trainers.SimpleKTOTrainer` and overwrite the loss function definition. KTO has one hyperparameter, beta, which we can access via `self.config.loss.beta`:
+   We can implement a dummy version of KTO as follows (not that this is different from the proper version of KTO in `KTOTrainer`). To make DummyKTOTrainer, we just subclass `trainers.UnpairedPreferenceTrainer` as `trainers.DummyKTOTrainer` and overwrite the loss function definition. 
 
    ```python
-   class SimpleKTOTrainer(UnpairedPreferenceTrainer):
-      """A simple version of KTO meant to introduce you to the HALOs repo."""
+   class DummyKTOTrainer(UnpairedPreferenceTrainer):
+      """A fake version of KTO meant to introduce you to the HALOs repo."""
       def loss(self,
            policy_chosen_logps: torch.FloatTensor,
            policy_rejected_logps: torch.FloatTensor,
            reference_chosen_logps: torch.FloatTensor,
            reference_rejected_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-      """Compute the Kahneman-Tversky loss for a batch of policy and reference model log probabilities. 
-      For each batch of n/2 chosen examples and n/2 rejected examples (belonging to n different inputs), calculate the loss as follows.
-
-      If generation y ~ p_chosen, where x' ~ are the examples with rejected generations, we have the 'chosen' loss:
-          L(x, y) := 1 - sigmoid(beta * (log p_policy(y|x) - log p_reference(y|x) - KL(p_policy(y_rejected|x') || p_reference(y_rejected|x')))
-      If generation y ~ p_rejected, , where x' ~ are the examples with chosen generations, we have the 'rejected' loss:
-          L(x, y) := 1 - sigmoid(beta * KL(p_policy(y_chosen|x') || p_reference(y_chosen|x')) - [log p_policy(y|x) - log p_reference(y|x)])
-      """
       chosen_KL = (policy_chosen_logps - reference_chosen_logps).mean().clamp(min=0)
       rejected_KL = (policy_rejected_logps - reference_rejected_logps).mean().clamp(min=0)
 
@@ -79,75 +62,96 @@ What should we do?
       return losses, chosen_rewards, rejected_rewards
    ```
 
-7. Add a file to the config/loss folder specifying the details of the loss:
+4. If we wanted, we could add a file to the `config/loss` folder specifying the details of the Dummy KTO loss:
 
    ```yaml
-    name: kto-simple
-    beta: 0.1 # the temperature parameter for simple KTO; lower values mean we care less about the reference model
-    trainer: SimpleKTOTrainer # implemented in trainers.py
+    name: dummy-kto
+    beta: 0.1 # the temperature parameter for dummy KTO; lower values mean we care less about the reference model
+    trainer: DummyKTOTrainer # implemented in trainers.py
     dataloader: UnpairedPreferenceDataLoader # already exists in dataloaders.py
     use_reference_model: true # true because the loss definition includes a reference model
+    policy_hf_model_class: AutoModelForCausalLM # class from Huggingface transformers
+    reference_hf_model_class: AutoModelForCausalLM # class from Huggingface transformers
     ```
+    
+    Similarly, to support a new class of model, we would add a yaml file under `config/model` that inherits from `config/model/base_model.yaml`.
 
-8. Now we can start training a model! Let's train a Llama-7B model on the SHP, Anthropic HH, and Open Assistant datasets.
-   Since the corresponding entry for Llama-7B is config/model/llama7b.yaml, we run a command with [Hydra](https://hydra.cc/docs/intro/):
+5. Now we can start training a model! Let's align a Llama3-8B model on the Ultrafeedback and SHP datasets. If we're on an 8-GPU node, then we would run:
 
-   `python train.py loss=kto-simple model=llama7b datasets=[shp,hh,oasst] exp_name=kto-simple_llama7b mode=train ++cache_dir=/data/models`
+   ```console
+   accelerate launch \
+      --config_file accelerate_config/fsdp_8gpu.yaml \   # accelerate config
+      --main_process_port 29500 \                        # port for gpu communication
+      launch.py \                                        # main file for launching job
+      loss=dummy-kto \                                   # must be a file name in config/loss
+      model=llama \                                      # must be a file name in config/model
+      datasets=[ultrabin,shp] \                          # list of datasets, each with a method (e.g., get_shp) in train/dataloader.py
+      exp_name=llama3-8b_sft_dummy-kto \                 # experiment name, also the subfolder in cache dir for saving the model          
+      ++cache_dir=/data/models \                               # set the cache directory 
+      ++model.name_or_path=meta-llama/Meta-Llama-3-8B \        # HF (or local) repo containing model configs, vocab, etc.
+      ++model.load_from=/data/models/llama3-8b_sft/FINAL/ \    # load an existing model; if empty, use the model at model.name_or_path
+      ++lr=5e-6 \                                              # set the learning rate
+      ++loss.beta=0.1                                          # set a KTO-specific hyperparameter (see config/loss/kto.yaml for details)
+   ```
 
-   which will align a Llama-7B model from scratch. If we want to align a model that we've already finetuned with the HALOs repo,
-   we can add something like `++model.load_from=/data/models/sft_llama7b/LATEST/policy.pt` to the end of the command.
+   That's it! Your model will be saved to `/data/models/llama3-8b_sft_dummy-kto/FINAL`.
 
-   That's it! Your model will be saved to `/data/models/kto-simple_llama7b/LATEST/policy.pt`.
+6. We can now evaluate the aligned model. First, to evaluate on AlpacaEval (you need to set OPENAI_API_KEY for this to work):
 
+   ```console
+   python -m eval.sample_for_alpacaeval /data/models/llama3-8b_sft_dummy-kto/FINAL --gpu_count 1 --output_file outputs/llama3-8b_sft_dummy-kto.json
+   alpaca_eval evaluate --is_overwrite_leaderboard=True --model_outputs=outputs/llama3-8b_sft_dummy-kto.json
+   ```
 
-9. Let's sample some generations from our newly trained model. The sampling configs are in either `config/config.yaml` or under `models/`.
-   We can sample 512 generations from our newly trained model in batches of 32 with the command, which will create a JSON file under `samples/{config.exp_name}.json`.
+   Then, we can run the model on various benchmarks from LMEval, which was downloaded during installation:
 
-   `python eval.py --config-path=/data/models/kto-simple_llama7b/config.yaml ++mode=sample ++n_samples=512 ++model.eval_batch_size=32 ++samples_dir=samples/`
+   ```console
+   export MODEL_PATH=/data/models/llama3-8b_sft_dummy-kto/FINAL
+   lm_eval --model hf \
+   --model_args pretrained="$MODEL_PATH",tokenizer="$MODEL_PATH",parallelize=True \
+   --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot \   # can add any task in LMEval
+   --batch_size 4    # bug if you use 'auto' with gsm8k_cot
+   ```
 
-10. After setting `OPENAI_API_KEY`, we can evaluate our aligned model with GPT-4 with the following command, which compares the aligned model's generations to the human-chosen response in the data:
-
-    `python compare.py -f samples/kto-simple_llama7b.json -mc 512 -bk chosen -ck policy -r result.jsonl `
+   These steps are combined in `benchmark.sh`.
 
 
 ## FAQs
 
 1. Do you support multi-node training?
 
-   No, currently the repo only supports single-node training. Multi-node training will be added at some point in the future.
-   Every model in the Archangel suite was trained with 8 x A100 GPUs on a single node.
+   Yes, see the `launch_multinode_batch.sh` and `launch_multinode_interactive.sh` for how to launch jobs across two nodes in a batch or interactive Slurm job. You may need a custom Accelerate configuration depending on how many nodes you have. Use the 2-node examples in `accelerate_config` as a template.
 
 2. How do I save intermediate checkpoints?
 
-   Set intermediate_checkpoints to true in config/config.yaml or on the command line with ++config.intermediate_checkpoints=true.
-   Every config.eval_every steps, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
+   Set `intermediate_checkpoints` to true in `config/config.yaml` or on the command line with `++config.intermediate_checkpoints=true`.
+   Every `config.eval_every` steps, a checkpoint will be saved in the experiment directory ($cache_dir/$exp_name).
 
 3. Where do I find all the Archangel models?
 
-    They are all on the Huggingface Hub:
+   They are all on the [Huggingface Hub](https://huggingface.co/collections/ContextualAI/archangel-65bd45029fa020161b052430).
 
-| Model | PPO | DPO | KTO | SFT | SLIC | SFT+PPO | SFT+DPO | SFT+KTO | CSFT | SFT+CSFT |
-| ------------- |:-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|-------------:|-------------:| -------------:|-------------:|
-| pythia1-4b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_pythia1-4b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_pythia1-4b) |  
-| pythia2-8b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_pythia2-8b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_pythia2-8b) |  
-| pythia6-9b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_pythia6-9b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_pythia6-9b) |  
-| pythia12-0b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_pythia12-0b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_pythia12-0b) |  
-| llama7b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_llama7b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_llama7b) |  
-| llama13b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_llama13b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_llama13b) |  
-| llama30b | [weights](https://huggingface.co/ContextualAI/archangel_ppo_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_dpo_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_kto_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_sft_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_slic_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-ppo_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-dpo_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-kto_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_csft_llama30b) | [weights](https://huggingface.co/ContextualAI/archangel_sft-csft_llama30b) |  
+4. Do you support LoRA training?
 
-![halos](assets/thumbnail.jpg)
+   Yes. Set `use_peft` to true in `config/model/base_model.yaml` or on the command line with `++model.use_peft=true`. You can either use the default LoRA hyperparameters in `config/model/base_model.yaml` or override them on the command line (e.g., `++model.peft.lora_r=128`).
+
+5. Do you support FlashAttention?
+
+   Yes, just override `attn_implementation` to `flash_attention_2` in `model/base_model.yaml`, on the command line, or in the any of the files that inherit from `model/base_model.yaml`. This is done by default for certain model families.
+
+6. Can I cache the log probabilities of the reference model to save memory?
+
+   Yes. Simply set `++cache_reference_logprobs=true` to precompute the log probabilities from the reference model, which will substantially reduce memory. If you are using the same reference model across multiple jobs, which is common, you can override `++reference model=PATH` to the log probabilities that were cached in a pickle file from a previous job.
 
    
 ## Citation
 
-If you find this repo or the technical paper useful in your research, please feel free to cite [our work](https://contextual.ai/better-cheaper-faster-llm-alignment-with-kto/):
+If you find this repo useful, please feel free to cite:
+
 ```
-@techreport{ethayarajh2023halos,
-  author = {Ethayarajh, Kawin and Xu, Winnie, and Jurafsky, Dan and Kiela, Douwe},
-  title = {Human-Centered Loss Functions (HALOs)},
-  institution = {Contextual AI},
-  note = {https://github.com/ContextualAI/HALOs/blob/main/assets/report.pdf},
-  year = {2023},
+@inproceedings{ethayarajhmodel,
+  title={Model Alignment as Prospect Theoretic Optimization},
+  author={Ethayarajh, Kawin and Xu, Winnie and Muennighoff, Niklas and Jurafsky, Dan and Kiela, Douwe},
+  booktitle={Forty-first International Conference on Machine Learning}
 }
 ```

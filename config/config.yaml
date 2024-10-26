@@ -73,10 +73,11 @@ load_reference_logprobs: null
 
 ## DATALOADER SETTINGS
 
-# what fraction of undesirable generations should be kept
+# what fraction of undesirable data should be kept
 # e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away
 # this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
 frac_unique_desirable: 1.0
 
-# what fraction of desirable generations should be kept
+# what fraction of desirable data should be kept
+# this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
 frac_unique_undesirable: 1.0

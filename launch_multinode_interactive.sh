@@ -14,7 +14,7 @@ module load anaconda3/2024.2
 
 # Activate your conda environment
 conda init
-conda activate halos_3
+conda activate halos_6
 
 echo "Machine Rank: $SLURM_PROCID"
 
@@ -24,7 +24,6 @@ accelerate launch \
     --main_process_ip $MASTER_ADDR \
     --main_process_port $MASTER_PORT \
     launch.py loss=kto model=llama datasets=[ultrafeedback_hybrid] exp_name=llama-test \
-	mode=train \
 	++cache_dir=/scratch/gpfs/ke7953/models \
 	++model.name_or_path=meta-llama/Meta-Llama-3-8B \
 	++lr=1e-6 \

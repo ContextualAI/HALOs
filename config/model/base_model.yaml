@@ -1,11 +1,11 @@
-# the name of the model to use; should be something like
+# the name of the model to use; should be a Hugginface path like
 #   gpt2-xl or gpt-neo-2.7B or huggyllama/llama-7b
 name_or_path: ???
 
-# the name of the tokenizer to use; if null, will use the tokenizer from the model
+# the name of the tokenizer to use; if null, will use name_or_path
 tokenizer_name_or_path: null
 
-# override pre-trained weights from local model (e.g., from SFT); optional, should be the name of the model dir (e.g., archangel_sft_pythia-1.4b/LATEST/)
+# override pre-trained weights with local model; optional, should be the name of the model dir (e.g., /cache/models/archangel_sft_pythia-1.4b/FINAL/)
 load_from: null
 
 # directory containing checkpoint
@@ -17,9 +17,6 @@ block_name: null
 
 # the dtype for the policy parameters/optimizer state
 policy_dtype: bfloat16
-
-# the mixed precision dtype if using FSDP; defaults to the same as the policy
-fsdp_policy_mp: null
 
 # the dtype for the reference model (which is used for inference only)
 reference_dtype: bfloat16
@@ -36,23 +33,28 @@ max_length: 1024
 # the maximum allowed length for a prompt (remainder will be dedicated to the completion)
 max_prompt_length: 512
 
+# activation checkpointing (not supported for all models; may need to be overwritten)
 activation_checkpointing: true
 
-# the total batch size for training; for FSDP, divide by number of devices to get microbatch size
+# the per-step batch size (across all machines); for FSDP, divide by number of devices to get microbatch size
 batch_size: 8
+
 # number of steps to accumulate over for each batch; effective batch size should be 32 for best results
 gradient_accumulation_steps: 4
 
 # the batch size during evaluation and sampling, if enabled
-eval_batch_size: 16
+eval_batch_size: 8
 
+# use flash-attention-2 if available
 attn_implementation: eager
 
+# whether to use LoRA training
 use_peft: false
 
+# whether to load LoRAs from somewhere (should be a path to a directory)
 load_lora_from: null
 
-# the lora will be merged into the base model before saving
+# lora hyperparameters; the lora will be merged into the base model before saving
 peft:
   lora_r: 64
   lora_alpha: 256 

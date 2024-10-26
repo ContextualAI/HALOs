@@ -8,6 +8,7 @@ dataloader: ConditionalSFTDataLoader
 
 use_reference_model: false
 
+# prepended to positive and negative sequences respectively
 control_tokens:
   chosen: "<|good|>"
   rejected: "<|bad|>"

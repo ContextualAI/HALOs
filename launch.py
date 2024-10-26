@@ -65,9 +65,6 @@ def main(config: DictConfig):
         accelerator.print('Setting eval_every to', config.eval_every - config.eval_every % config.model.batch_size)
         config.eval_every = config.eval_every - config.eval_every % config.model.batch_size
 
-    if config.saved_policy is None:
-        config.saved_policy = f"{config.local_run_dir}/LATEST/policy.pt"
-
     accelerator.print(OmegaConf.to_yaml(config))
 
     if accelerator.is_main_process:

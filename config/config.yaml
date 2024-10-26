@@ -4,7 +4,7 @@ seed: 1
 # name for this experiment in the local run directory and on wandb
 exp_name: ???
 
-# datasets should be specified
+# datasets should be specified as a list (e.g., ++datasets=[shp,hh])
 datasets: ???
 
 # debug mode (disables wandb, model checkpointing, etc.)
@@ -18,7 +18,7 @@ wandb:
 
 # where trained models will be saved
 # use HF environmental variables to control where the datasets, pretrained Huggingface models, etc. are saved 
-# relevant HF env variables are TRANSFORMERS_CACHE, HF_DATASETS_CACHE, HF_MODULES_CACHE, HF_METRICS_CACHE
+# relevant HF env variables are HF_HOME
 cache_dir: .cache/
 
 local_run_dir: ${cache_dir}/${exp_name}
@@ -29,6 +29,7 @@ do_first_eval: true
 # prevent wandb from logging more than once per minimum_log_interval_secs
 minimum_log_interval_secs: 1.0
 
+# if true, save a checkpoint every eval_every steps, which can be set further below
 intermediate_checkpoints: false
 
 defaults:
@@ -51,41 +52,26 @@ n_epochs: 1
 # the number of examples to train for; if null, must specify n_epochs
 n_examples: null
 
-# The optimizer to use; we use RMSprop because it works about as well as Adam and is more memory-efficient
+# the number of examples to evaluate on (leave as null to evaluate on all of them)
+n_eval_examples: 256
+
+# evaluate and save model every eval_every steps
+eval_every: 1000
+
+# the optimizer to use; should be one of the options listed here: https://pytorch.org/docs/stable/optim.html
 optimizer: AdamW
 
 # number of linear warmup steps for the learning rate
 warmup_steps: 150
 
-# evaluate and save model every eval_every steps
-eval_every: 1000
-
 # cache log probabilities of reference model
 cache_reference_logprobs: false
 
-# load previously cached log probabilities of reference model
+# path to pickle file of previously cached log probabilities of reference model
 load_reference_logprobs: null
 
 
-### EVALUATION SETTINGS
-
-# how many model samples to generate during sampling
-n_samples: 128
-
-# where to dump samples
-samples_dir: "samples/"
-
-# the number of examples to evaluate on (leave as null to evaluate on all of them)
-n_eval_examples: 256
-
-# where the aligned policy model is stored
-saved_policy: null
-
-# top p choice for sampling
-top_p: 0.95
-
-
-### DATALOADER SETTINGS
+## DATALOADER SETTINGS
 
 # what fraction of undesirable generations should be kept
 # e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away

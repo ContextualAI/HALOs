@@ -2,7 +2,7 @@
 # **H**um**a**n-Centered **Lo**ss Functions (HALOs) :innocent:
 
 This repo allows you to align LLMs with various methods, such as DPO, KTO, and an offline version of PPO.
-It was originally released with the KTO paper but has since been significantly revised to support LoRAs, logit caching, and easy evaluation (for the original code, see the `legacy' branch of the repo).
+It was originally released with the KTO paper but has since been significantly revised to support LoRAs, reference logit caching, and easy evaluation (for the original code, see the `legacy` branch of the repo).
 
 Compared to alternatives like TRL or Axlotl, HALOs sacrifices some functionality for:
 - modularity: Dataloading, training, and sampling are all separate.
@@ -13,11 +13,11 @@ It has been tested at scales from 1B to 30B LLMs; an earlier version was used to
 
 Configs are handled by [Hydra](https://hydra.cc/), jobs are launched with [Accelerate](https://huggingface.co/docs/accelerate/en/index), and all training is done with FSDP by default. To first SFT a model from the Hugginface repo `meta-llama/Meta-Llama-3-8B`, run a command like
 
-```accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py loss=sft model=llama datasets=[ultrabin] exp_name=llama3-8b_sft ++cache_dir=/data/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B ++lr=1e-6```
+```accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py loss=sft model=llama datasets=[ultrabin] exp_name=llama3-8b_sft ++cache_dir=/data/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B```
 
 which will save a model to `/data/models/llama3-8b_sft/FINAL/`. To then align the SFT model with KTO, run a command like
 
-```accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8b_sft_kto ++cache_dir=/data/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B ++model.load_from=/data/models/llama3-8b_sft/FINAL/ ++lr=5e-6 ++loss.beta=0.1```
+```accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml --main_process_port 29500 launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8b_sft_kto ++cache_dir=/data/models ++model.name_or_path=meta-llama/Meta-Llama-3-8B ++model.load_from=/data/models/llama3-8b_sft/FINAL/```
 
 which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 
@@ -30,7 +30,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
    . install.sh
    ```
 
-2. Determine whether you need a new dataset. If you have a dataset that you want to refer to as `foo` when you launch jobs, add a function called `get_foo` to `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where `split` should be either `train` or `test`:
+2. Determine whether you need a new dataset. If you have a dataset that you want to refer to as `foo` when you launch jobs, add a function called `get_foo` in `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where `split` should be either `train` or `test`:
 
    ```def get_foo(split: str, *args, **kwargs) -> Dataset:```
     
@@ -89,7 +89,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
       exp_name=llama3-8b_sft_dummy-kto \                 # experiment name, also the subfolder in cache dir for saving the model          
       ++cache_dir=/data/models \                               # set the cache directory 
       ++model.name_or_path=meta-llama/Meta-Llama-3-8B \        # HF (or local) repo containing model configs, vocab, etc.
-      ++model.load_from=/data/models/llama3-8b_sft/FINAL/ \    # load an existing model; if empty, use the model at model.name_or_path
+      ++model.load_from=/data/models/llama3-8b_sft/FINAL/ \    # load existing model as starting point; if empty, use model.name_or_path
       ++lr=5e-6 \                                              # set the learning rate
       ++loss.beta=0.1                                          # set a KTO-specific hyperparameter (see config/loss/kto.yaml for details)
    ```
@@ -133,13 +133,13 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 
 4. Do you support LoRA training?
 
-   Yes. Set `use_peft` to true in `config/model/base_model.yaml` or on the command line with `++model.use_peft=true`. You can either use the default LoRA hyperparameters in `config/model/base_model.yaml` or override them on the command line (e.g., `++model.peft.lora_r=128`).
+   Yes. Set `use_peft` to true in `config/model/base_model.yaml` or on the command line with `++model.use_peft=true`. You can either use the default LoRA hyperparameters in `config/model/base_model.yaml` or override them on the command line (e.g., `++model.peft.lora_r=128`). Note that intermediate checkpoints during LoRA training will only be the LoRA module, but the LoRA weights will be merged with the model before the final save.
 
 5. Do you support FlashAttention?
 
-   Yes, just override `attn_implementation` to `flash_attention_2` in `model/base_model.yaml`, on the command line, or in the any of the files that inherit from `model/base_model.yaml`. This is done by default for certain model families.
+   Yes, just override `attn_implementation` to `flash_attention_2` in `model/base_model.yaml`, on the command line, or in the any of the files that inherit from `model/base_model.yaml`. This is done by default for certain model classes.
 
-6. Can I cache the log probabilities of the reference model to save memory?
+6. Can I precompute the log probabilities of the reference model to save memory?
 
    Yes. Simply set `++cache_reference_logprobs=true` to precompute the log probabilities from the reference model, which will substantially reduce memory. If you are using the same reference model across multiple jobs, which is common, you can override `++reference model=PATH` to the log probabilities that were cached in a pickle file from a previous job.
 

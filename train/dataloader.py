@@ -16,7 +16,7 @@ Each Example object will contain
 - for unary feedback data: whether each generation is desirable/chosen or undesirable/rejected
 - whether to truncate the beginning or end if the maximum number of tokens is exceeded
 - the dataset name
-- the unformatted prompt (needed for alpaca)
+- the unformatted prompt
 """
 
 import datasets
@@ -481,10 +481,13 @@ class DataLoader:
             attention mask, etc.). The generation elements will have keys starting with '{prefix}_' and the concatenated 
             elements will have keys starting with '{prefix}_combined_'.
         """
+        untruncated_prompt_string = self.tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True) # for inference-time generation
+        
         filter_out_bos_eos = lambda x: [ t for t in x if t not in [ self.tokenizer.bos_token_id, self.tokenizer.eos_token_id, self.tokenizer.pad_token_id] ]
         # truncate the prompt if necessary
         prompt_length = 0
 
+        # truncate history to fit in self.max_prompt_length
         for i, turn in enumerate(conversation):
             content_token_ids = filter_out_bos_eos(self.tokenizer.encode(turn['content']))
             # we're only modifying the text in content but need to consider the formatted length
@@ -503,7 +506,6 @@ class DataLoader:
         generation_token_ids = filter_out_bos_eos(self.tokenizer.encode(generation))
         generation = self.tokenizer.decode(generation_token_ids[:(self.max_length - prompt_length)])
 
-        tokenized_prompt_string = self.tokenizer.apply_chat_template(conversation, tokenize=False, add_generation_prompt=True)
         tokenized_prompt = self.tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=True)
         if tokenized_prompt[-1] in [self.tokenizer.eos_token_id, self.tokenizer.pad_token_id]:
             tokenized_prompt.pop()
@@ -517,7 +519,7 @@ class DataLoader:
 
         # Prepare the batch element
         batch_element = {
-            'prompt_text': tokenized_prompt_string,
+            'prompt_text': untruncated_prompt_string,
             f'{prefix}_text': generation,
             f'{prefix}_combined_text': tokenized_prompt_and_generation_string,
             f'{prefix}_combined_input_ids': tokenized_prompt_and_generation,
@@ -698,14 +700,9 @@ class ConditionalSFTDataLoader(DataLoader):
                 break
 
     def get_num_training_steps(self):
-        num_training_steps = 0
-
-        for prompt, example in self.full_data.items():
-            if self.max_prompt_count:
-                num_training_steps += min(self.max_prompt_count, len(example.pairs)) * 2
-            else:
-                num_training_steps += len(example.pairs) * 2
-            
+        max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
+        num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+        num_training_steps = num_pairs * 2
         return num_training_steps
 
 
@@ -716,6 +713,12 @@ class UnpairedPreferenceDataLoader(DataLoader):
     Since all the datasets have (or imply) pairwise preferences, this function assumes all preferred/dispreferred
     generations are from the desirable/undesirable conditional generations given x. 
     """
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        if self.batch_size == 1:
+            raise ValueError("can't use batch size of 1 with UnpairedPreferenceDataLoader")
+        
     def get_flat_data(self, prompts):
         """
         Return a flat list of examples given a list of prompts that index self.full_data.
@@ -765,17 +768,10 @@ class UnpairedPreferenceDataLoader(DataLoader):
             example_queue = []
 
             for example, generation, status in flat_data:
-                # Convert prompt to conversation format if it's not already
-                conversation = example.prompt
-                if not isinstance(conversation[0], dict):
-                    conversation = [{"role": "user", "content": conversation[0]}]
-                    for i, message in enumerate(conversation[1:]):
-                        role = "assistant" if i % 2 == 0 else "user"
-                        conversation.append({"role": role, "content": message})
-
-                batch_element = self.tokenize_batch_element(conversation, generation, example.truncation_mode, prefix='target')
+                batch_element = self.tokenize_batch_element(example.prompt, generation, example.truncation_mode, prefix='target')
                 batch_element['status'] = status 
                 batch_element['truncation_mode'] = example.truncation_mode
+                batch_element['conversation'] = example.prompt
                 example_queue.append(batch_element)
                 
                 if len(example_queue) >= self.batch_size:
@@ -789,7 +785,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
                     indices = list(range(1, len(batch))) + [0]
                     for i in range(len(batch)):
                         batch[i].update(self.tokenize_batch_element(
-                            conversation,
+                            batch[i]['conversation'],
                             batch[indices[i]]['target_text'],
                             batch[i]['truncation_mode'],
                             prefix='KL'
@@ -810,14 +806,9 @@ class UnpairedPreferenceDataLoader(DataLoader):
                 break
 
     def get_num_training_steps(self):
-        num_training_steps = 0
-
-        for prompt, example in self.full_data.items():
-            if self.max_prompt_count:
-                num_training_steps += min(self.max_prompt_count, len(example.pairs)) * 2
-            else:
-                num_training_steps += len(example.pairs) * 2
-            
+        max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
+        num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+        num_training_steps = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
         return num_training_steps
 
 
@@ -908,22 +899,8 @@ class PairedPreferenceDataLoader(DataLoader):
 
             for example, (i, j) in flat_data:
                 batch_element = {}
-
-                # Convert prompt to conversation format if it's not already
-                conversation = example.prompt
-                if not isinstance(conversation[0], dict):
-                    conversation = [{"role": "user", "content": conversation[0]}]
-                    for idx, message in enumerate(conversation[1:]):
-                        role = "assistant" if idx % 2 == 0 else "user"
-                        conversation.append({"role": role, "content": message})
-
-                # Tokenize chosen and rejected responses
-                chosen_conversation = conversation + [{"role": "assistant", "content": example.generations[i]}]
-                rejected_conversation = conversation + [{"role": "assistant", "content": example.generations[j]}]
-
-                batch_element.update(self.tokenize_batch_element(chosen_conversation, example.generations[i], example.truncation_mode, prefix='chosen'))
-                batch_element.update(self.tokenize_batch_element(rejected_conversation, example.generations[j], example.truncation_mode, prefix='rejected'))
-
+                batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], example.truncation_mode, prefix='chosen'))
+                batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], example.truncation_mode, prefix='rejected'))
                 batch.append(batch_element)
 
                 if len(batch) >= self.batch_size:
@@ -942,12 +919,5 @@ class PairedPreferenceDataLoader(DataLoader):
                 break
 
     def get_num_training_steps(self):
-        num_training_steps = 0
-
-        for prompt, example in self.full_data.items():
-            if self.max_prompt_count:
-                num_training_steps += min(self.max_prompt_count, len(example.pairs))
-            else:
-                num_training_steps += len(example.pairs)
-            
-        return num_training_steps
+        max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
+        return int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))

@@ -139,9 +139,10 @@ def main(config: DictConfig):
         **data_iterator_kwargs
     )
 
+    TrainerClass = getattr(trainers, config.loss.trainer)
     # Building reference
-    if config.loss.use_reference_model:
-        reference_cls = globals()[config.loss.reference_hf_model_class]
+    if TrainerClass.use_reference_model:
+        reference_cls = TrainerClass.reference_hf_model_class
         reference_kwargs = {
             'torch_dtype': getattr(torch, config.model.reference_dtype),
             'attn_implementation' : config.model.attn_implementation if config.model.policy_dtype in ["float16", "bfloat16"] else "eager",
@@ -180,7 +181,7 @@ def main(config: DictConfig):
         reference_model = None
 
     # Building policy
-    policy_cls = globals()[config.loss.policy_hf_model_class]
+    policy_cls = TrainerClass.policy_hf_model_class
     policy_kwargs = {
         'torch_dtype': getattr(torch, config.model.policy_dtype), 
         'attn_implementation' : config.model.attn_implementation if config.model.policy_dtype in ["float16", "bfloat16"] else "eager",
@@ -195,7 +196,7 @@ def main(config: DictConfig):
 
     if config.model.use_peft:
         # if there's a value head, then peft should only be applied to the base model
-        base_model = policy.pretrained_model if config.loss.policy_hf_model_class == 'AutoModelForCausalLMWithValueHead' else policy
+        base_model = policy.pretrained_model if TrainerClass.policy_hf_model_class == AutoModelForCausalLMWithValueHead else policy
         base_model.enable_input_require_grads()
 
         if config.model.load_lora_from:
@@ -221,7 +222,7 @@ def main(config: DictConfig):
                 if 'lora_' in name:
                     module.to(getattr(torch, config.model.policy_dtype))
 
-        if config.loss.policy_hf_model_class == 'AutoModelForCausalLMWithValueHead':
+        if TrainerClass.policy_hf_model_class == AutoModelForCausalLMWithValueHead:
             policy.pretrained_model = peft_model
         else:
             policy = peft_model
@@ -253,7 +254,6 @@ def main(config: DictConfig):
         num_skip_batches = 0
     
     # Initialize trainer
-    TrainerClass = getattr(trainers, config.loss.trainer)
     trainer = TrainerClass(
         tokenizer, 
         config, 

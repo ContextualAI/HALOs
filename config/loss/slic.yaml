@@ -1,5 +1,4 @@
 # Sequence Likelihood Calibration: https://arxiv.org/abs/2305.10425
-name: slic
 
 # the temperature parameter for SLiC
 beta: 1.0
@@ -10,9 +9,3 @@ lambda_coef: 0.1
 trainer: SLiCTrainer
 
 dataloader: PairedPreferenceDataLoader
-
-use_reference_model: false
-
-policy_hf_model_class: AutoModelForCausalLM
-
-reference_hf_model_class: AutoModelForCausalLM

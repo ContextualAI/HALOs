@@ -1,18 +1,11 @@
 # token-conditioned supervised finetuning, in the style of Korbak et al.'s (2023) "Pretraining Models with Human Feedback."
 # i.e., add a <good> or <bad> token prior to the output during training, then postpend <good> to the input for inference
-name: csft
 
 trainer: SFTTrainer
 
 dataloader: ConditionalSFTDataLoader
 
-use_reference_model: false
-
 # prepended to positive and negative sequences respectively
 control_tokens:
   chosen: "<|good|>"
   rejected: "<|bad|>"
-
-policy_hf_model_class: AutoModelForCausalLM
-
-reference_hf_model_class: AutoModelForCausalLM

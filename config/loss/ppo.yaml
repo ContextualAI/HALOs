@@ -1,5 +1,4 @@
 # Proximal Policy Optimization
-name: ppo
 
 # number of times to iterate over the same PPO batch
 ppo_epochs: 1
@@ -22,9 +21,3 @@ critic_coef: 0.01
 
 # coefficient on KL penalty
 KL_coef: 0.1
-
-use_reference_model: true
-
-policy_hf_model_class: AutoModelForCausalLMWithValueHead
-
-reference_hf_model_class: AutoModelForCausalLM

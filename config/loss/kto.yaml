@@ -1,5 +1,4 @@
 # Kahneman-Tversky Optimization
-name: kto
 
 # the temperature parameter for KTO; lower values mean we care less about the reference model
 beta: 0.1
@@ -8,17 +7,11 @@ trainer: KTOTrainer
 
 dataloader: UnpairedPreferenceDataLoader
 
-use_reference_model: true
-
 # how much to weigh the losses of desirable examples (when dataset is imbalanced)
 desirable_weight: 1.0
 
 # how much to weigh the losses of undesirable examples (when dataset is imbalanced)
 undesirable_weight: 1.0
-
-policy_hf_model_class: AutoModelForCausalLM
-
-reference_hf_model_class: AutoModelForCausalLM
 
 # use tokenwise KL estimator
 tokenwise_KL: false

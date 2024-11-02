@@ -69,9 +69,6 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
     beta: 0.1 # the temperature parameter for dummy KTO; lower values mean we care less about the reference model
     trainer: DummyKTOTrainer # implemented in trainers.py
     dataloader: UnpairedPreferenceDataLoader # already exists in dataloaders.py
-    use_reference_model: true # true because the loss definition includes a reference model
-    policy_hf_model_class: AutoModelForCausalLM # class from Huggingface transformers
-    reference_hf_model_class: AutoModelForCausalLM # class from Huggingface transformers
     ```
     
     Similarly, to support a new class of model, we would add a yaml file under `config/model` that inherits from `config/model/base_model.yaml`.

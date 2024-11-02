@@ -53,6 +53,10 @@ from typing import Optional, Dict, List, Union, Tuple
 
 
 class BasicTrainer(object):
+    policy_hf_model_class = AutoModelForCausalLM
+    reference_hf_model_class = AutoModelForCausalLM
+    use_reference_model = True
+
     def __init__(self, 
                  tokenizer: AutoTokenizer, 
                  config: DictConfig, 
@@ -362,6 +366,8 @@ class BasicTrainer(object):
 
 
 class SFTTrainer(BasicTrainer):
+    use_reference_model = False
+
     def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs.
         
@@ -393,6 +399,8 @@ class SFTTrainer(BasicTrainer):
 
 
 class UnpairedPreferenceTrainer(BasicTrainer):
+    use_reference_model = True
+
     """A trainer for any loss that doesn't use paired preference, like KTO."""
     def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor, torch.BoolTensor]:
         """Run the given model on the given batch of inputs.
@@ -459,6 +467,8 @@ class UnpairedPreferenceTrainer(BasicTrainer):
 
 
 class PairedPreferenceTrainer(BasicTrainer):
+    use_reference_model = True
+
     """A trainer for any loss that uses paired preference, like DPO."""
     def concatenated_inputs(self, batch: Dict[str, Union[List, torch.LongTensor]]) -> Dict[str, torch.LongTensor]:
         """Concatenate the chosen and rejected inputs into a single tensor. The first half is chosen outputs, the second half is rejected.
@@ -583,6 +593,8 @@ class CDPOTrainer(PairedPreferenceTrainer):
 
 
 class SLiCTrainer(PairedPreferenceTrainer):
+    use_reference_model = False
+
     def loss(self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
@@ -800,6 +812,9 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
 
 
 class PPOTrainer(BasicTrainer):
+    policy_hf_model_class = AutoModelForCausalLMWithValueHead
+    use_reference_model = True
+
     """One-step, offline variant of PPO."""
     def prepare_accelerator(self):
         """Prepare the Accelerator."""

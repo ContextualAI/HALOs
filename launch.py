@@ -71,15 +71,16 @@ def main(config: DictConfig):
         os.makedirs(config.local_run_dir, exist_ok=True)
         accelerator.print("Making experiment directory", config.local_run_dir)
 
-        os.environ['WANDB_CACHE_DIR'] = config.cache_dir
-        wandb.init(
-            entity=config.wandb.entity,
-            project=config.wandb.project,
-            config=OmegaConf.to_container(config),
-            dir=config.cache_dir,
-            name=config.exp_name,
-        )
-    
+        if config.wandb.enabled:
+            os.environ['WANDB_CACHE_DIR'] = config.cache_dir
+            wandb.init(
+                entity=config.wandb.entity,
+                project=config.wandb.project,
+                config=OmegaConf.to_container(config),
+                dir=config.cache_dir,
+                name=config.exp_name,
+            )
+        
         config_path = os.path.join(config.local_run_dir, 'config.yaml')
         with open(config_path, 'w') as f:
             OmegaConf.save(config, f)

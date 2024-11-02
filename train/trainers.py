@@ -613,10 +613,12 @@ class KTOTrainer(UnpairedPreferenceTrainer):
     def loss(self,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
-        policy_KL_logps: torch.FloatTensor,
+        policy_chosen_KL_logps: torch.FloatTensor,
+        policy_rejected_KL_logps: torch.FloatTensor,
         reference_chosen_logps: torch.FloatTensor,
         reference_rejected_logps: torch.FloatTensor,
-        reference_KL_logps,
+        reference_chosen_KL_logps: torch.FloatTensor,
+        reference_rejected_KL_logps: torch.FloatTensor,
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the Kahneman-Tversky loss for a batch of policy and reference model log probabilities.
@@ -634,18 +636,25 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         log p_policy(y'|x) - log p_reference(y'|x). Doing so avoids the requirement that there be equal numbers of 
         desirable and undesirable examples in the microbatch.
         """
-        KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
-        
-        # take mean of the KL estimates across all devices in this step
-        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
-        # interpolate between running average and current batch estimate
-        KL = self.config.loss.KL_decay * self.previous_KL + (1 - self.config.loss.KL_decay) * KL
-        # update moving average
-        self.previous_KL = KL.item()
+        if self.config.loss.tokenwise_KL:
+            KL = torch.Tensor([]).to(self.accelerator.device)
+
+            if policy_chosen_logps.shape[0] != 0:
+                KL_chosen = ((policy_chosen_KL_logps - reference_chosen_KL_logps).clamp(min=0).max(-1)).values
+                KL = torch.cat((KL, KL_chosen), 0)
+
+            if policy_rejected_logps.shape[0] != 0:
+                KL_rejected = ((policy_rejected_KL_logps - reference_rejected_KL_logps).clamp(min=0).max(-1)).values
+                KL = torch.cat((KL, KL_rejected), 0)
+        else:
+            KL_rewards = torch.cat((policy_chosen_KL_logps, policy_rejected_KL_logps), 0).sum(-1) - torch.cat((reference_chosen_KL_logps, reference_rejected_KL_logps), 0).sum(-1)
+            # take mean of the KL estimates across all devices in this step
+            KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
+            KL_chosen, KL_rejected = KL, KL
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL))
+            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL_chosen))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
@@ -653,7 +662,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         
         if policy_rejected_logps.shape[0] != 0:
             rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards))
+            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (KL_rejected - rejected_rewards))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
@@ -672,9 +681,10 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             - use_cache: if true, can get cached logprobs instead
 
         Returns:
-            chosen_logps: log probabilities of chosen examples (should be batch size / 2 if data was read in correctly)
-            rejected_logps: log probabilities of rejected examples (should be batch size / 2 if data was read in correctly)
-            KL_logps: log probabilities of the unmatched y'|x (used to estimate the KL divergence between policy and reference; should be batch size)
+            chosen_logps: log probabilities of chosen examples
+            rejected_logps: log probabilities of rejected examples
+            chosen_KL_logps: log probabilities of the unmatched y'|x (used to estimate the KL divergence between policy and reference
+            rejected_KL_logps: log probabilities of the unmatched y'|x (used to estimate the KL divergence between policy and reference
         """
         with self.accelerator.autocast():
             with torch.no_grad():
@@ -704,23 +714,25 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         chosen_logps = target_logps[chosen_idx, ...]
         rejected_logps = target_logps[rejected_idx, ...]
 
-        return chosen_logps, rejected_logps, KL_logps
+        return chosen_logps, rejected_logps, KL_logps[chosen_idx, ...], KL_logps[rejected_idx, ...]
     
     def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
 
-        policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
+        policy_chosen_logps, policy_rejected_logps, policy_chosen_KL_logps, policy_rejected_KL_logps = self.forward(self.policy, batch)
         with torch.no_grad():
-            reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
+            reference_chosen_logps, reference_rejected_logps, reference_chosen_KL_logps, reference_rejected_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
         
         losses, chosen_rewards, rejected_rewards, KL = self.loss(
             policy_chosen_logps,
             policy_rejected_logps,
-            policy_KL_logps,
+            policy_chosen_KL_logps,
+            policy_rejected_KL_logps,
             reference_chosen_logps,
             reference_rejected_logps,
-            reference_KL_logps
+            reference_chosen_KL_logps,
+            reference_rejected_KL_logps,
         )
 
         combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
@@ -738,7 +750,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         metrics[f'rewards_{mode}/KL_estimate'] = all_KL
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
-        del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
+        del policy_chosen_logps, policy_rejected_logps, policy_chosen_KL_logps, policy_rejected_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_chosen_KL_logps, reference_rejected_KL_logps
         del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
         return losses.sum(), metrics

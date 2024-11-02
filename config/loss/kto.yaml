@@ -20,6 +20,5 @@ policy_hf_model_class: AutoModelForCausalLM
 
 reference_hf_model_class: AutoModelForCausalLM
 
-# whether KL estimate should be a running estimate that is KL_decay * previous_batch_estimate + (1 - KL_decay) * current_batch_estimate
-# helpful when per-step batch size is small and gradient accumulation is needed
-KL_decay: 0
+# use tokenwise KL estimator
+tokenwise_KL: false

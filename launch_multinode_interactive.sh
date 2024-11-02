@@ -14,7 +14,7 @@ module load anaconda3/2024.2
 
 # Activate your conda environment
 conda init
-conda activate halos_6
+conda activate halos
 
 echo "Machine Rank: $SLURM_PROCID"
 

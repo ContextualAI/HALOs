@@ -32,7 +32,7 @@ init_env() {
 
     # Activate your conda environment
     source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate halos_6
+    conda activate halos
 
     echo "Running on node: $(hostname)"
     echo "Machine Rank: $SLURM_PROCID"

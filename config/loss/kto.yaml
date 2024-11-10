@@ -12,6 +12,3 @@ desirable_weight: 1.0
 
 # how much to weigh the losses of undesirable examples (when dataset is imbalanced)
 undesirable_weight: 1.0
-
-# use tokenwise KL estimator
-tokenwise_KL: false

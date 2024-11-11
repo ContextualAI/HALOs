@@ -39,11 +39,11 @@ class Example:
     """
     Class for an example in a preference or SFT dataset. If you want each prompt to be uniquely associated with an Example instance, save it in a dict.
     """
-    prompt: str = ''                                            # prompt for the generated texts
-    generations: List[str] = field(default_factory=list)        # list of generations
-    sft_index: int = -1                                         # which response in generations should be generated for SFT
+    prompt: List = field(default_factory=list)                  # list of turns, each with two keys: "role" and "content"
+    generations: List = field(default_factory=list)             # list of list of turns (the output sequences to predict)
+    sft_index: int = -1                                         # which response in self.generations should be generated for SFT
     scores: List[float] = field(default_factory=list)           # score for each generation
-    pairs: List[Tuple[int, int]] = field(default_factory=list)  # for binary feedback data:: indices in responses, where i > j in pair (i,j) is a preference
+    pairs: List[Tuple[int, int]] = field(default_factory=list)  # for binary feedback data: indices in responses, where i > j in pair (i,j) is a preference
     desirable: List[bool] = field(default_factory=list)         # for unary feedback data: whether the generation at the corresponding index in self.generations is desirable 
     truncation_mode: str = 'keep_end'                           # if truncation needed, keep the beginning (keep_start) or end (keep_end) (only override default for SHP)
     dataset_name: str = ''
@@ -64,7 +64,9 @@ class Example:
             turn['content'] = clean(turn['content'])
 
         # Clean the generations
-        self.generations = [clean(gen) for gen in self.generations]
+        for x in self.generations:
+            for turn in x:
+                turn["content"] = clean(turn["content"])
 
 
 class Dataset:
@@ -119,7 +121,7 @@ def get_alpacaeval(split: str) -> Dataset:
     for row in dataset:
         conversation = [{"role": "user", "content": row['instruction']}]
         data[row['instruction']].prompt = conversation
-        data[row['instruction']].generations.append(row['output'])
+        data[row['instruction']].generations.append([{"role": "assistant", "content": row['output']}])
         data[row['instruction']].dataset_name = row['dataset']
         data[row['instruction']].original_prompt = row['instruction']
         data[row['instruction']].sft_index = 0
@@ -147,7 +149,6 @@ def get_shp(split: str, seed: int=0) -> Dataset:
 
     for row in dataset:
         conversation = [{"role": "user", "content": row['history']}]
-        responses = [row['human_ref_A'], row['human_ref_B']]
         scores = [row['score_A'], row['score_B']]
         score_ratio = max(scores[0] / scores[1], scores[1] / scores[0])
 
@@ -157,7 +158,8 @@ def get_shp(split: str, seed: int=0) -> Dataset:
         i, j = data[row['history']].num_generations(), data[row['history']].num_generations() + 1
         data[row['history']].prompt = conversation
         data[row['history']].original_prompt = row['history']
-        data[row['history']].generations.extend(responses)
+        data[row['history']].generations.append([{"role": "assistant", "content": row['human_ref_A']}])
+        data[row['history']].generations.append([{"role": "assistant", "content": row['human_ref_B']}])
         data[row['history']].pairs.append((i, j) if row['labels'] == 1 else (j, i))
         data[row['history']].scores.extend(scores)
         data[row['history']].truncation_mode = 'keep_start'  # keep start for SHP because it's single-turn with long prompts
@@ -213,11 +215,11 @@ def get_hh(split: str, only_helpful=False, only_harmless=False) -> Dataset:
     for row in dataset:
         conversation, chosen, rejected = split_prompt_and_responses(row)
         prompt_key = ' '.join([turn['content'] for turn in conversation])  # Use full conversation as key
-        responses = [chosen, rejected]
         i, j = data[prompt_key].num_generations(), data[prompt_key].num_generations() + 1
 
         data[prompt_key].prompt = conversation
-        data[prompt_key].generations.extend(responses)
+        data[prompt_key].generations.append([{"role": "assistant", "content": chosen}])
+        data[prompt_key].generations.append([{"role": "assistant", "content": rejected}])
         data[prompt_key].pairs.append((i, j))
         data[prompt_key].sft_index = 0
 
@@ -295,7 +297,8 @@ def get_oasst(split: str) -> Dataset:
         prompt_key = json.dumps(conversation)  # Use the conversation as the key
 
         data[prompt_key].prompt = conversation
-        data[prompt_key].generations.extend([next_best_sibling['text'], row['text']])
+        data[prompt_key].generations.append([{"role": "assistant", "content": next_best_sibling['text']}])
+        data[prompt_key].generations.append([{"role": "assistant", "content": row['text']}])
         data[prompt_key].pairs.append((len(data[prompt_key].generations) - 2, len(data[prompt_key].generations) - 1))
         data[prompt_key].scores.extend([next_best_sibling['rank'], row['rank']])
         data[prompt_key].dataset_name = 'oasst'
@@ -342,7 +345,8 @@ def get_ultrabin(split: str) -> Dataset:
 
         # Update the dataset
         data[key].prompt = conversation
-        data[key].generations.extend([chosen_response, rejected_response])
+        data[key].generations.append([{"role": "assistant", "content": chosen_response}])
+        data[key].generations.append([{"role": "assistant", "content": rejected_response}])
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
         data[key].sft_index = i  # The chosen response is the SFT target
@@ -374,7 +378,8 @@ def get_ultrafeedback_hybrid(split: str) -> Dataset:
 
         # Update the dataset
         data[key].prompt = conversation
-        data[key].generations.extend([chosen_response, rejected_response])
+        data[key].generations.append([{"role": "assistant", "content": chosen_response}])
+        data[key].generations.append([{"role": "assistant", "content": rejected_response}])
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
         data[key].sft_index = i  # The chosen response is the SFT target
@@ -472,7 +477,7 @@ class DataLoader:
 
         Args:
         - conversation: list of previous turns, each resembling dict {"role": "assistant", "content": generation}
-        - generation: output text (i.e., assistant generation)
+        - generation: list of current turns, each resembling dict {"role": "assistant", "content": generation}
         - truncation_mode: one of 'keep_start'/'keep_end' (truncate end/beginning of prompt respectively)
         - prefix: the prefix corresponding to the generation (e.g., 'chosen', 'rejected', 'target')
 
@@ -485,7 +490,7 @@ class DataLoader:
         
         filter_out_bos_eos = lambda x: [ t for t in x if t not in [ self.tokenizer.bos_token_id, self.tokenizer.eos_token_id, self.tokenizer.pad_token_id] ]
         # truncate the prompt if necessary
-        prompt_length = 0
+        total_length = 0
 
         # truncate history to fit in self.max_prompt_length
         for i, turn in enumerate(conversation):
@@ -493,26 +498,33 @@ class DataLoader:
             # we're only modifying the text in content but need to consider the formatted length
             templated_length = len(self.tokenizer.apply_chat_template([turn], tokenize=True, add_generation_prompt=True))
             
-            if prompt_length + templated_length > self.max_prompt_length:
-                turn['content'] = self.tokenizer.decode(content_token_ids[:self.max_prompt_length - (prompt_length + templated_length)])
-                prompt_length = self.max_prompt_length
+            if total_length + templated_length > self.max_prompt_length:
+                turn['content'] = self.tokenizer.decode(content_token_ids[:self.max_prompt_length - (total_length + templated_length)])
+                total_length = self.max_prompt_length
                 break
             else:
-                prompt_length += templated_length
+                total_length += templated_length
 
         conversation = conversation[:(i+1)]
 
         # truncate the generation if necessary 
-        generation_token_ids = filter_out_bos_eos(self.tokenizer.encode(generation))
-        generation = self.tokenizer.decode(generation_token_ids[:(self.max_length - prompt_length)])
+        for i, turn in enumerate(generation):
+            content_token_ids = filter_out_bos_eos(self.tokenizer.encode(turn['content']))
+            # we're only modifying the text in content but need to consider the formatted length
+            templated_length = len(self.tokenizer.apply_chat_template([turn], tokenize=True, add_generation_prompt=False))
+            
+            if total_length + templated_length > self.max_length:
+                turn['content'] = self.tokenizer.decode(content_token_ids[:self.max_length - (total_length + templated_length)])
+                total_length = self.max_length
+                break
+            else:
+                total_length += templated_length
 
-        tokenized_prompt = self.tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=True)
-        if tokenized_prompt[-1] in [self.tokenizer.eos_token_id, self.tokenizer.pad_token_id]:
-            tokenized_prompt.pop()
-        
-        tokenized_prompt_and_generation_string = self.tokenizer.apply_chat_template(conversation + [{"role": "assistant", "content": generation}], tokenize=False, add_generation_prompt=False)
+        generation = generation[:(i+1)]
+
+        tokenized_prompt_and_generation_string = self.tokenizer.apply_chat_template(conversation + generation, tokenize=False, add_generation_prompt=False)
         tokenized_prompt_and_generation = self.tokenizer.apply_chat_template(
-            conversation + [{"role": "assistant", "content": generation}], 
+            conversation + generation, 
             tokenize=True, 
             add_generation_prompt=False
         )
@@ -520,13 +532,17 @@ class DataLoader:
         # Prepare the batch element
         batch_element = {
             'prompt_text': untruncated_prompt_string,
-            f'{prefix}_text': generation,
+            f'{prefix}_text': self.tokenizer.apply_chat_template(generation, tokenize=False),
             f'{prefix}_combined_text': tokenized_prompt_and_generation_string,
             f'{prefix}_combined_input_ids': tokenized_prompt_and_generation,
             f'{prefix}_combined_attention_mask': [1] * len(tokenized_prompt_and_generation),
         }
 
         # Prepare labels
+        tokenized_prompt = self.tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=True)
+        if tokenized_prompt[-1] in [self.tokenizer.eos_token_id, self.tokenizer.pad_token_id]:
+            tokenized_prompt.pop()
+        
         labels = tokenized_prompt_and_generation[:]
         labels[:len(tokenized_prompt)] = [-100] * len(tokenized_prompt)
         batch_element[f'{prefix}_labels'] = labels
@@ -772,6 +788,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
                 batch_element['status'] = status 
                 batch_element['truncation_mode'] = example.truncation_mode
                 batch_element['conversation'] = example.prompt
+                batch_element['generation'] = generation
                 example_queue.append(batch_element)
                 
                 if len(example_queue) >= self.batch_size:
@@ -786,7 +803,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
                     for i in range(len(batch)):
                         batch[i].update(self.tokenize_batch_element(
                             batch[i]['conversation'],
-                            batch[indices[i]]['target_text'],
+                            batch[indices[i]]['generation'],
                             batch[i]['truncation_mode'],
                             prefix='KL'
                         ))

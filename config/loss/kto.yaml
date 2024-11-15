@@ -12,3 +12,6 @@ desirable_weight: 1.0
 
 # how much to weigh the losses of undesirable examples (when dataset is imbalanced)
 undesirable_weight: 1.0
+
+# alpha in pareto distribution
+pareto_alpha: 2

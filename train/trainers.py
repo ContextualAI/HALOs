@@ -620,7 +620,6 @@ class SLiCTrainer(PairedPreferenceTrainer):
 class KTOTrainer(UnpairedPreferenceTrainer):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.previous_KL = 0
 
     def loss(self,
         policy_chosen_logps: torch.FloatTensor,
@@ -648,7 +647,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         """
         KL_rewards = policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)
         # take mean of the KL estimates across all devices in this step
-        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
+        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=np.random.pareto(self.config.loss.pareto_alpha))
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))

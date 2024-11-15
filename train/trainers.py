@@ -647,7 +647,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         """
         KL_rewards = policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)
         # take mean of the KL estimates across all devices in this step
-        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=np.random.pareto(self.config.loss.pareto_alpha))
+        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))

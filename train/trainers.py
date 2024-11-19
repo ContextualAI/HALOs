@@ -651,7 +651,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL))
+            chosen_losses = self.config.loss.desirable_weight * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
@@ -659,13 +659,13 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         
         if policy_rejected_logps.shape[0] != 0:
             rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards))
+            rejected_losses = self.config.loss.undesirable_weight * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
             rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
 
-        losses = torch.cat((self.config.loss.desirable_weight * chosen_losses, self.config.loss.undesirable_weight * rejected_losses), 0)
+        losses = torch.cat((chosen_losses, rejected_losses), 0)
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach(), KL.detach()
     

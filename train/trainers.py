@@ -592,6 +592,44 @@ class CDPOTrainer(PairedPreferenceTrainer):
         return losses, chosen_rewards.detach(), rejected_rewards.detach()
 
 
+class IPOTrainer(PairedPreferenceTrainer):
+    def loss(self,
+        policy_chosen_logps: torch.FloatTensor,
+        policy_rejected_logps: torch.FloatTensor,
+        reference_chosen_logps: torch.FloatTensor,
+        reference_rejected_logps: torch.FloatTensor,
+        *args,
+        ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the IPO loss for a batch of policy and reference model token-level log probabilities."""
+        # must average over the probabilities
+        policy_chosen_logps = policy_chosen_logps.sum(-1) / (policy_chosen_logps > 0).sum(-1).clamp(min=1)
+        policy_rejected_logps = policy_rejected_logps.sum(-1) / (policy_rejected_logps > 0).sum(-1).clamp(min=1)
+        reference_chosen_logps = reference_chosen_logps.sum(-1) / (reference_chosen_logps > 0).sum(-1).clamp(min=1)
+        reference_rejected_logps = reference_rejected_logps.sum(-1) / (reference_rejected_logps > 0).sum(-1).clamp(min=1)
+
+        chosen_rewards = policy_chosen_logps - reference_chosen_logps
+        rejected_rewards = policy_rejected_logps - reference_rejected_logps
+        
+        losses = (chosen_rewards - rejected_rewards - (1/(2 * self.config.loss.tau))).pow(2)
+
+        return losses, chosen_rewards.detach(), rejected_rewards.detach()
+    
+
+class SimPOTrainer(PairedPreferenceTrainer):
+    def loss(self,
+        policy_chosen_logps: torch.FloatTensor,
+        policy_rejected_logps: torch.FloatTensor,
+        *args,
+        ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute the SimPO loss for a batch of policy and reference model token-level log probabilities."""
+        chosen_rewards = self.config.loss.beta * policy_chosen_logps.sum(-1) / (policy_chosen_logps > 0).sum(-1).clamp(min=1)
+        rejected_rewards = self.config.loss.beta * policy_rejected_logps.sum(-1) / (policy_rejected_logps > 0).sum(-1).clamp(min=1)
+
+        losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
+
+        return losses, chosen_rewards.detach(), rejected_rewards.detach()
+
+
 class SLiCTrainer(PairedPreferenceTrainer):
     use_reference_model = False
 

@@ -1,0 +1,8 @@
+# Simple Preference Optimization
+
+# the temperature parameter for SimPO; controls the saturation
+beta: 0.1
+
+trainer: SimPOTrainer
+
+dataloader: PairedPreferenceDataLoader

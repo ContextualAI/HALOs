@@ -1,0 +1,8 @@
+# Ψ-Preference Optimisation
+
+# the temperature parameter for IPO; lower values mean we care less about the reference model
+tau: 0.1
+
+trainer: IPOTrainer
+
+dataloader: PairedPreferenceDataLoader

@@ -602,10 +602,10 @@ class IPOTrainer(PairedPreferenceTrainer):
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the IPO loss for a batch of policy and reference model token-level log probabilities."""
         # must average over the probabilities
-        policy_chosen_logps = policy_chosen_logps.sum(-1) / (policy_chosen_logps > 0).sum(-1).clamp(min=1)
-        policy_rejected_logps = policy_rejected_logps.sum(-1) / (policy_rejected_logps > 0).sum(-1).clamp(min=1)
-        reference_chosen_logps = reference_chosen_logps.sum(-1) / (reference_chosen_logps > 0).sum(-1).clamp(min=1)
-        reference_rejected_logps = reference_rejected_logps.sum(-1) / (reference_rejected_logps > 0).sum(-1).clamp(min=1)
+        policy_chosen_logps = policy_chosen_logps.sum(-1) / (policy_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
+        policy_rejected_logps = policy_rejected_logps.sum(-1) / (policy_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
+        reference_chosen_logps = reference_chosen_logps.sum(-1) / (reference_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
+        reference_rejected_logps = reference_rejected_logps.sum(-1) / (reference_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
 
         chosen_rewards = policy_chosen_logps - reference_chosen_logps
         rejected_rewards = policy_rejected_logps - reference_rejected_logps
@@ -622,8 +622,8 @@ class SimPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the SimPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * policy_chosen_logps.sum(-1) / (policy_chosen_logps > 0).sum(-1).clamp(min=1)
-        rejected_rewards = self.config.loss.beta * policy_rejected_logps.sum(-1) / (policy_rejected_logps > 0).sum(-1).clamp(min=1)
+        chosen_rewards = self.config.loss.beta * policy_chosen_logps.sum(-1) / (policy_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
+        rejected_rewards = self.config.loss.beta * policy_rejected_logps.sum(-1) / (policy_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
 
         losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
 

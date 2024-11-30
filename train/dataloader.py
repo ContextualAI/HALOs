@@ -390,6 +390,26 @@ def get_ultrafeedback_hybrid(split: str) -> Dataset:
     return data
 
 
+def get_ultrachat(split: str) -> Dataset:
+    rank0_print(f'Loading ultrachat dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('HuggingFaceH4/ultrachat_200k', split=f'{split}_sft')
+    if on_rank0():
+        dataset = tqdm.tqdm(dataset, desc='Processing ultrachat')
+
+    data = Dataset('ultrachat')
+
+    for row in dataset:
+        key = row["prompt"]
+        data[key].prompt = row["messages"][:-1]
+        data[key].generations.append(row["messages"][-1:])
+        data[key].sft_index = 0 
+        data[key].dataset_name = data.name
+        data[key].truncation_mode = 'keep_start'
+        data[key].remove_extra_spaces()
+
+    return data
+
+
 class DataLoader:
     """
     The base data loader class, similar to the one from the DPO repo.

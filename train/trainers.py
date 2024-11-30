@@ -625,7 +625,7 @@ class SimPOTrainer(PairedPreferenceTrainer):
         chosen_rewards = self.config.loss.beta * policy_chosen_logps.sum(-1) / (policy_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
         rejected_rewards = self.config.loss.beta * policy_rejected_logps.sum(-1) / (policy_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
 
-        losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
+        losses = -F.logsigmoid(chosen_rewards - rejected_rewards - self.config.loss.gamma)
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach()
 

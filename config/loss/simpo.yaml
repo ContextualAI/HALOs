@@ -1,7 +1,10 @@
 # Simple Preference Optimization
 
 # the temperature parameter for SimPO; controls the saturation
-beta: 0.1
+beta: 2.0
+
+# hyperparam for margin size
+gamma: 0.5
 
 trainer: SimPOTrainer
 

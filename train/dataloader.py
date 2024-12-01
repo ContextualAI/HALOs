@@ -400,8 +400,8 @@ def get_ultrachat(split: str) -> Dataset:
 
     for row in dataset:
         key = row["prompt"]
-        data[key].prompt = row["messages"][:-1]
-        data[key].generations.append(row["messages"][-1:])
+        data[key].prompt = [row["messages"][0]]
+        data[key].generations.append(row["messages"][1:])
         data[key].sft_index = 0 
         data[key].dataset_name = data.name
         data[key].truncation_mode = 'keep_start'

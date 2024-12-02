@@ -60,3 +60,10 @@ peft:
   lora_alpha: 256 
   lora_dropout: 0.05
   target_modules: "all-linear"
+
+# auxiliary reward model (e.g., for PPO)
+reward_model:
+  path: null
+  model_class: AutoModelForBradleyTerry
+  dtype: float32
+  attn_implementation: flash_attention_2

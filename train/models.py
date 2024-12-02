@@ -16,10 +16,10 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
 from huggingface_hub import hf_hub_download
-from transformers import PreTrainedModel, AutoModelForCausalLM
+from transformers import PreTrainedModel, AutoModelForCausalLM, AutoModelForSequenceClassification
 from accelerate.utils import gather_object
 from tqdm import tqdm
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Union, Optional
 
 
 class PreTrainedModelWrapper(nn.Module):
@@ -548,3 +548,71 @@ class ReferenceModelWrapper(nn.Module):
     
     def eval(self):
         pass # pass through, allows wrapper to be treated like a neural network
+
+
+class AutoModelForBradleyTerry(AutoModelForSequenceClassification):
+    """A wrapper around AutoModelForSequenceClassification that ensures binary classification."""
+    
+    @classmethod
+    def from_pretrained(
+        cls,
+        pretrained_model_name_or_path: Union[str, PreTrainedModel],
+        *model_args,
+        **kwargs
+    ) -> PreTrainedModel:
+        """
+        Overrides from_pretrained to ensure num_labels=2.
+        
+        Args:
+            pretrained_model_name_or_path: Either:
+                - A string, the model id of a pretrained model hosted inside a model repo on huggingface.co
+                - A path to a directory containing model weights saved using save_pretrained()
+                - A PreTrainedModel object
+            model_args: Additional positional arguments passed along to the underlying model's __init__ function
+            kwargs: Additional keyword arguments passed along to the underlying model's __init__ function
+            
+        Returns:
+            A PreTrainedModel instance with binary classification head
+        """
+        # Force binary classification
+        kwargs['num_labels'] = 2
+        
+        # If config is passed, ensure it has num_labels=2
+        if 'config' in kwargs and hasattr(kwargs['config'], 'num_labels'):
+            kwargs['config'].num_labels = 2
+            
+        # Initialize model
+        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, **kwargs)
+        
+        # Configure padding token in model config if not already set
+        if not hasattr(model.config, "pad_token_id") or model.config.pad_token_id is None:
+            model.config.pad_token_id = model.config.eos_token_id
+            
+        return model
+
+    def save_pretrained(
+        self,
+        save_directory: str,
+        is_main_process: bool = True,
+        state_dict: Optional[dict] = None,
+        save_function: callable = torch.save,
+        **kwargs
+    ):
+        """
+        Save a model and its configuration file to a directory.
+        Ensures the config maintains num_labels=2 and padding token configuration when saved.
+        """
+        # Ensure config has num_labels=2 before saving
+        self.config.num_labels = 2
+        
+        # Ensure padding token configuration is saved
+        if not hasattr(self.config, "pad_token_id") or self.config.pad_token_id is None:
+            self.config.pad_token_id = self.config.eos_token_id
+        
+        return super().save_pretrained(
+            save_directory,
+            is_main_process=is_main_process,
+            state_dict=state_dict,
+            save_function=save_function,
+            **kwargs
+        )

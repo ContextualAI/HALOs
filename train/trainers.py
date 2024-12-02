@@ -20,7 +20,7 @@ import torch.nn.functional as F
 import torch.nn as nn
 import transformers
 import gc
-from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead
+from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, AutoModelForBradleyTerry
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
 from accelerate import Accelerator
@@ -67,7 +67,8 @@ class BasicTrainer(object):
                  scheduler: torch.optim.lr_scheduler.LRScheduler,
                  policy: nn.Module, 
                  reference_model: Optional[nn.Module] = None,
-                 num_skip_batches=0):
+                 num_skip_batches=0,
+                 **kwargs):
         """A trainer for a language model, supporting either SFT, HALO, or offline PPO training."""
         self.seed = config.seed
         torch.manual_seed(self.seed)
@@ -836,6 +837,23 @@ class PPOTrainer(BasicTrainer):
     use_reference_model = True
 
     """One-step, offline variant of PPO."""
+    def __init__(self, 
+                 *args, 
+                 **kwargs):
+        """Initialize the PPO trainer, optionally with a reward model.
+        
+        Args:
+            reward_model: Optional model that predicts reward scores. If None, uses binary labels.
+            *args, **kwargs: Arguments passed to BasicTrainer
+        """
+        super().__init__(*args, **kwargs)
+        self.reward_model = kwargs.get('reward_model', None)
+        self.reward_tokenizer = kwargs.get('reward_tokenizer', None)
+        if self.reward_model is not None:
+            assert self.reward_tokenizer is not None, "reward_tokenizer must be provided when using reward_model"
+            self.reward_model, self.reward_tokenizer = self.accelerator.prepare(self.reward_model, self.reward_tokenizer)
+            self.reward_model.eval()
+            
     def prepare_accelerator(self):
         """Prepare the Accelerator."""
         self.policy.pretrained_model, self.policy.v_head, self.reference_model, self.train_iterator, self.eval_iterator, self.optimizer, self.scheduler = self.accelerator.prepare(
@@ -881,6 +899,38 @@ class PPOTrainer(BasicTrainer):
         all_logps = all_logps.contiguous()
 
         return all_logps, all_logits, all_values
+
+    def get_reward_scores(self, batch: Dict[str, torch.LongTensor]) -> torch.FloatTensor:
+        """Get reward scores either from reward model or binary labels.
+        
+        Args:
+            batch: Dictionary containing batch data
+            
+        Returns:
+            torch.FloatTensor of shape (batch_size,) containing reward scores
+        """
+        if self.reward_model is not None:
+            # Decode the sequences using policy tokenizer
+            sequences = self.tokenizer.batch_decode(batch['target_combined_input_ids'], skip_special_tokens=True)
+            # Encode with reward model tokenizer
+            reward_inputs = self.reward_tokenizer(
+                sequences,
+                padding=True,
+                truncation=True,
+                return_tensors='pt',
+                max_length=self.config.model.max_length
+            ).to(self.accelerator.device)
+
+            with torch.no_grad():
+                # Get reward model scores
+                outputs = self.reward_model(reward_inputs['input_ids'], attention_mask=reward_inputs['attention_mask'])
+                # Use the positive class logit as the reward score
+                reward_scores = outputs.logits[:, 1]
+        else:
+            # Use binary labels (1 for chosen, -1 for rejected)
+            reward_scores = torch.tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(len(batch['status']))])
+
+        return reward_scores
     
     def compute_advantages(self, values: torch.FloatTensor, rewards: torch.FloatTensor, masks: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
         """
@@ -975,17 +1025,17 @@ class PPOTrainer(BasicTrainer):
             global_batch_dict: dictionary containing processed batch data
         """
         batch_size = len(batch['prompt_text'])
-        batch['scores'] = torch.Tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(batch_size)])
         batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
         with torch.no_grad():
             masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype)
             logprobs, _, _ = self.forward(self.reference_model, batch, is_policy=False)
             _, _, values = self.forward(self.policy, batch)
-            
+            # Get reward scores from either reward model or binary labels
+            scores = self.get_reward_scores(batch)
             rewards = torch.zeros_like(masks) 
             for row in range(rewards.shape[0]):
-                rewards[row, masks[row].nonzero()[-1]] += batch['scores'][row]
+                rewards[row, masks[row].nonzero()[-1]] += scores[row]
 
             rewards = rewards * masks
             advantages, returns, discounted_future_rewards = self.compute_advantages(values, rewards, masks)
@@ -995,6 +1045,7 @@ class PPOTrainer(BasicTrainer):
             "target_labels": batch['target_labels'],
             "target_combined_attention_mask": batch['target_combined_attention_mask'],
             "logprobs": logprobs,
+            "rewards": scores,
             "values": values,
             "masks": masks,
             "advantages": advantages,
@@ -1158,6 +1209,7 @@ class PPOTrainer(BasicTrainer):
         }
         loss, metrics = self.loss(shuffled_global_batch, episode)
 
+        metrics['rewards'] = shuffled_global_batch['rewards'].detach()
         metrics['returns/mean'] = masked_mean(shuffled_global_batch['returns'], shuffled_global_batch['masks']).detach()
         metrics['returns/var'] = masked_var(shuffled_global_batch['returns'], shuffled_global_batch['masks']).detach()
         metrics['val/mean'] = masked_mean(shuffled_global_batch['values'], shuffled_global_batch['masks']).detach()
@@ -1227,3 +1279,96 @@ class PPOTrainer(BasicTrainer):
         unwrapped_v_head = self.accelerator.unwrap_model(self.policy.v_head)
         torch.save(unwrapped_v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))
         self.accelerator.wait_for_everyone()
+
+
+class BradleyTerryTrainer(PairedPreferenceTrainer):
+    policy_hf_model_class = AutoModelForBradleyTerry
+    use_reference_model = False
+
+    def forward(self, model: AutoModelForBradleyTerry, 
+                batch: Dict[str, Union[List, torch.LongTensor]]
+                ) -> Tuple[torch.FloatTensor, torch.FloatTensor]:
+        """Get logits for both chosen and rejected examples.
+        
+        Args:
+            model: The Bradley-Terry model
+            batch: Dictionary containing batched inputs
+            
+        Returns:
+            chosen_logits: Raw logits for chosen examples
+            rejected_logits: Raw logits for rejected examples
+        """
+        concatenated_batch = self.concatenated_inputs(batch)
+        
+        with self.accelerator.autocast():
+            all_outputs = model(
+                concatenated_batch['concatenated_combined_input_ids'],
+                attention_mask=concatenated_batch['concatenated_combined_attention_mask'],
+            )
+            
+        # Split into chosen and rejected based on batch size
+        batch_size = batch['chosen_combined_input_ids'].shape[0]
+        chosen_logits = all_outputs.logits[:batch_size]
+        rejected_logits = all_outputs.logits[batch_size:]
+        
+        return chosen_logits, rejected_logits
+
+    def loss(self,
+             policy_chosen_logits: torch.FloatTensor,
+             policy_rejected_logits: torch.FloatTensor,
+             *args) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Compute Bradley-Terry loss given the logits for chosen and rejected examples.
+        
+        The Bradley-Terry model predicts P(A > B) = sigmoid(score_A - score_B)
+        where score_X is the model's predicted score for item X.
+        
+        Args:
+            policy_chosen_logits: Logits from model for chosen examples (batch_size, 2)
+            policy_rejected_logits: Logits from model for rejected examples (batch_size, 2)
+            
+        Returns:
+            losses: The computed losses
+            chosen_rewards: Scores for chosen examples 
+            rejected_rewards: Scores for rejected examples
+        """
+        # Extract the scores (logits[:, 1] represents the positive class logit)
+        chosen_scores = policy_chosen_logits[:, 1]
+        rejected_scores = policy_rejected_logits[:, 1]
+        
+        # Compute probability of chosen being preferred over rejected
+        logits = chosen_scores - rejected_scores
+        
+        # Binary cross entropy loss with labels of 1 (chosen should be preferred)
+        labels = torch.ones_like(logits)
+        losses = F.binary_cross_entropy_with_logits(logits, labels)
+        
+        return losses, chosen_scores.detach(), rejected_scores.detach()
+
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str = 'train'):
+        """Compute metrics for a batch of examples.
+        
+        Args:
+            batch: The input batch
+            mode: Either 'train' or 'eval'
+            
+        Returns:
+            loss: The total loss for the batch
+            metrics: Dictionary of metrics
+        """
+        metrics = {}
+        
+        policy_chosen_logits, policy_rejected_logits = self.forward(self.policy, batch)
+        losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logits, policy_rejected_logits)
+        
+        # Compute accuracy
+        reward_accuracies = (chosen_rewards > rejected_rewards).float()
+        
+        # Gather metrics across all processes
+        metrics[f'rewards_{mode}/chosen'] = self.accelerator.gather(chosen_rewards.detach())
+        metrics[f'rewards_{mode}/rejected'] = self.accelerator.gather(rejected_rewards.detach())
+        metrics[f'rewards_{mode}/accuracies'] = self.accelerator.gather(reward_accuracies.detach())
+        metrics[f'rewards_{mode}/margins'] = self.accelerator.gather((chosen_rewards - rejected_rewards).detach())
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
+
+        return losses.sum(), metrics
+        

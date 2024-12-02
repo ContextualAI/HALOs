@@ -23,9 +23,10 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn as nn
 from train.utils import disable_dropout
-from train.models import AutoModelForCausalLMWithValueHead, ReferenceModelWrapper
+from train.models import AutoModelForCausalLMWithValueHead, ReferenceModelWrapper, AutoModelForBradleyTerry
 from train import trainers
 from train import dataloader
+from train import models
 import os
 import hydra
 from omegaconf import OmegaConf, DictConfig
@@ -252,7 +253,23 @@ def main(config: DictConfig):
         num_skip_batches = int(metrics.get('counter', 0) / config.model.batch_size)
     else:
         num_skip_batches = 0
-    
+
+    # Load explicit reward model if necessary (e.g., for PPO)
+    if config.model.reward_model.path:
+        accelerator.print(f'Loading reward model from {config.model.reward_model.path}')
+        reward_tokenizer = AutoTokenizer.from_pretrained(config.model.reward_model.path)
+        if reward_tokenizer.pad_token_id is None:
+            reward_tokenizer.pad_token_id = reward_tokenizer.eos_token_id
+
+        reward_hf_model_class = getattr(models, config.model.reward_model.model_class)
+        reward_kwargs = {
+            'torch_dtype': getattr(torch, config.model.reward_model.dtype), 
+            'attn_implementation' : config.model.reward_model.attn_implementation if config.model.reward_model.dtype in ["float16", "bfloat16"] else "eager",
+        }
+        reward_model = reward_hf_model_class.from_pretrained(config.model.reward_model.path, **reward_kwargs)
+    else:
+        reward_model, reward_tokenizer = None, None
+
     # Initialize trainer
     trainer = TrainerClass(
         tokenizer, 
@@ -265,6 +282,8 @@ def main(config: DictConfig):
         policy, 
         reference_model=reference_model,
         num_skip_batches=num_skip_batches,
+        reward_model=reward_model,
+        reward_tokenizer=reward_tokenizer,
     )
 
     trainer.train()

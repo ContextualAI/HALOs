@@ -1,0 +1,5 @@
+# Bradley-Terry Reward Model
+
+trainer: BradleyTerryTrainer
+
+dataloader: PairedPreferenceDataLoader

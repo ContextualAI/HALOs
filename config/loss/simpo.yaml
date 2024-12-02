@@ -4,7 +4,7 @@
 beta: 2.0
 
 # hyperparam for margin size
-gamma: 0.5
+gamma: 1.0
 
 trainer: SimPOTrainer
 

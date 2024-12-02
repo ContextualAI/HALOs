@@ -73,11 +73,11 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
     
     Similarly, to support a new class of model, we would add a yaml file under `config/model` that inherits from `config/model/base_model.yaml`.
 
-5. Now we can start training a model! Let's align a Llama3-8B model on the Ultrafeedback and SHP datasets. If we're on an 8-GPU node, then we would run:
+5. Now we can start training a model! Let's align a Llama3-8B model on the Ultrafeedback and SHP datasets. First, setup up logging with `wandb login` and run `wandb offline` if your GPUs are not connected to the Internet. Then to launch a job:
 
    ```console
    accelerate launch \
-      --config_file accelerate_config/fsdp_8gpu.yaml \   # accelerate config
+      --config_file accelerate_config/fsdp_8gpu.yaml \   # accelerate config for 8-gpu allocation
       --main_process_port 29500 \                        # port for gpu communication
       launch.py \                                        # main file for launching job
       loss=dummy-kto \                                   # must be a file name in config/loss
@@ -139,6 +139,10 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 6. Can I precompute the log probabilities of the reference model to save memory?
 
    Yes. Simply set `++cache_reference_logprobs=true` to precompute the log probabilities from the reference model, which will substantially reduce memory. If you are using the same reference model across multiple jobs, which is common, you can override `++reference model=PATH` to the log probabilities that were cached in a pickle file from a previous job.
+
+7. I am getting an error that looks like [rank1]: `torch.distributed.DistBackendError: [1] is setting up NCCL communicator and retrieving ncclUniqueId from [0] via c10d key-value store by key '0', but store->get('0') got error: Socket Timeout`.
+
+   This is because you did not set up wandb, so machine 0 is waiting for your input to setup wandb while the remaining machines are blocked. Resolve this by doing `wandb login` and then running `wandb offline` if your machines are not connected to the Internet.
 
    
 ## Citation

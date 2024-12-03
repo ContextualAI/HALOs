@@ -357,29 +357,25 @@ def get_ultrabin(split: str) -> Dataset:
     return data
 
 
-def get_ultrafeedback_hybrid(split: str) -> Dataset:
-    rank0_print(f'Loading ultrafeedback_hybrid dataset ({split} split) from Huggingface...')
-    dataset = datasets.load_dataset('wzhouad/gemma-2-ultrafeedback-hybrid', split=split)
+def get_ultrafeedback_armorm(split: str) -> Dataset:
+    rank0_print(f'Loading ultrafeedback_armorm dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('princeton-nlp/llama3-ultrafeedback-armorm', split=split)
     if on_rank0():
-        dataset = tqdm.tqdm(dataset, desc='Processing ultrafeedback hybrid')
+        dataset = tqdm.tqdm(dataset, desc='Processing ultrafeedback armorm')
 
-    data = Dataset('ultrafeedback_hybrid')
+    data = Dataset('ultrafeedback_armorm')
 
     for row in dataset:
         # Convert the prompt into the new format
         conversation = [{"role": "user", "content": row['prompt']}]
-
-        # Get the chosen and rejected responses
-        chosen_response = row['chosen'][-1]['content']
-        rejected_response = row['rejected'][-1]['content']
 
         # Create a unique key for this example (using the prompt)
         key = row['prompt']
 
         # Update the dataset
         data[key].prompt = conversation
-        data[key].generations.append([{"role": "assistant", "content": chosen_response}])
-        data[key].generations.append([{"role": "assistant", "content": rejected_response}])
+        data[key].generations.append(row['chosen'][-1])
+        data[key].generations.append(row['rejected'][-1])
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
         data[key].sft_index = i  # The chosen response is the SFT target

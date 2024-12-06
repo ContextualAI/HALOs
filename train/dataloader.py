@@ -538,6 +538,7 @@ class DataLoader:
 
         generation = generation[:(i+1)]
 
+        tokenized_prompt = self.tokenizer.apply_chat_template(conversation, tokenize=True, add_generation_prompt=True)
         tokenized_prompt_and_generation_string = self.tokenizer.apply_chat_template(conversation + generation, tokenize=False, add_generation_prompt=False)
         tokenized_prompt_and_generation = self.tokenizer.apply_chat_template(
             conversation + generation, 
@@ -548,6 +549,7 @@ class DataLoader:
         # Prepare the batch element
         batch_element = {
             'prompt_text': untruncated_prompt_string,
+            'prompt_input_ids': tokenized_prompt,
             f'{prefix}_text': self.tokenizer.apply_chat_template(generation, tokenize=False),
             f'{prefix}_combined_text': tokenized_prompt_and_generation_string,
             f'{prefix}_combined_input_ids': tokenized_prompt_and_generation,

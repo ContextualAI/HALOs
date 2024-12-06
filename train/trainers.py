@@ -142,12 +142,14 @@ class BasicTrainer(object):
         return policy_output_decoded
 
     def loss(self,
+             batch: Dict,
              policy_chosen_logps: torch.FloatTensor,
              policy_rejected_logps: torch.FloatTensor,
              reference_chosen_logps: torch.FloatTensor,
              reference_rejected_logps: torch.FloatTensor) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """
         Args:
+            batch: batch of data, mapping keys to Tensors
             policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
             policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
             reference_chosen_logps: Log probabilities of the reference model for the chosen responses. Shape: (batch_size,)
@@ -436,12 +438,12 @@ class UnpairedPreferenceTrainer(BasicTrainer):
 
         if self.reference_model is None:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
-            losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps)
+            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps)
         else:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
             with torch.no_grad():
                 reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
-            losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
+            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
         # all_gather treats empty lists/tensors poorly, and empty lists can occur because a batch can contain all chosen or all rejected example
         # therefore, concatenate chosen + rejected rewards before all_gather
@@ -532,12 +534,12 @@ class PairedPreferenceTrainer(BasicTrainer):
 
         if self.reference_model is None:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
-            losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps)
+            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps)
         else:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
             with torch.no_grad():
                 reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
-            losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
+            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
         # accuracy calculated on paired examples (for apples-to-apples comparison with UnpairedPreferenceTrainer)
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
@@ -559,6 +561,7 @@ class PairedPreferenceTrainer(BasicTrainer):
 
 class DPOTrainer(PairedPreferenceTrainer):
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         reference_chosen_logps: torch.FloatTensor,
@@ -576,6 +579,7 @@ class DPOTrainer(PairedPreferenceTrainer):
 
 class CDPOTrainer(PairedPreferenceTrainer):
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         reference_chosen_logps: torch.FloatTensor,
@@ -595,6 +599,7 @@ class CDPOTrainer(PairedPreferenceTrainer):
 
 class IPOTrainer(PairedPreferenceTrainer):
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         reference_chosen_logps: torch.FloatTensor,
@@ -602,11 +607,19 @@ class IPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the IPO loss for a batch of policy and reference model token-level log probabilities."""
+        prompt_lengths = (batch['prompt_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
+
+        chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
+        chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
+
+        rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
+        rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
+
         # must average over the probabilities
-        policy_chosen_logps = policy_chosen_logps.sum(-1) / (policy_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
-        policy_rejected_logps = policy_rejected_logps.sum(-1) / (policy_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
-        reference_chosen_logps = reference_chosen_logps.sum(-1) / (reference_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
-        reference_rejected_logps = reference_rejected_logps.sum(-1) / (reference_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
+        policy_chosen_logps = policy_chosen_logps.sum(-1) / chosen_lengths
+        policy_rejected_logps = policy_rejected_logps.sum(-1) / rejected_lengths
+        reference_chosen_logps = reference_chosen_logps.sum(-1) / chosen_lengths
+        reference_rejected_logps = reference_rejected_logps.sum(-1) / rejected_lengths
 
         chosen_rewards = policy_chosen_logps - reference_chosen_logps
         rejected_rewards = policy_rejected_logps - reference_rejected_logps
@@ -618,15 +631,23 @@ class IPOTrainer(PairedPreferenceTrainer):
 
 class SimPOTrainer(PairedPreferenceTrainer):
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the SimPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * policy_chosen_logps.sum(-1) / (policy_chosen_logps.abs() > 0).sum(-1).clamp(min=1)
-        rejected_rewards = self.config.loss.beta * policy_rejected_logps.sum(-1) / (policy_rejected_logps.abs() > 0).sum(-1).clamp(min=1)
+        prompt_lengths = (batch['prompt_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
 
-        losses = -F.logsigmoid(chosen_rewards - rejected_rewards - self.config.loss.gamma)
+        chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
+        chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
+        chosen_rewards = policy_chosen_logps.sum(-1) / chosen_lengths
+
+        rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
+        rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
+        rejected_rewards = policy_rejected_logps.sum(-1) / rejected_lengths
+        
+        losses = -F.logsigmoid(self.config.loss.beta * (chosen_rewards - rejected_rewards - self.config.loss.gamma_beta_ratio))
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach()
 
@@ -635,6 +656,7 @@ class SLiCTrainer(PairedPreferenceTrainer):
     use_reference_model = False
 
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         *args,
@@ -661,6 +683,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         super().__init__(*args, **kwargs)
 
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         policy_KL_logps: torch.FloatTensor,
@@ -760,6 +783,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
         
         losses, chosen_rewards, rejected_rewards, KL = self.loss(
+            batch,
             policy_chosen_logps,
             policy_rejected_logps,
             policy_KL_logps,
@@ -791,6 +815,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
 class KTOZeroTrainer(UnpairedPreferenceTrainer):
     def loss(self,
+        batch: Dict,
         policy_chosen_logps: torch.FloatTensor,
         policy_rejected_logps: torch.FloatTensor,
         reference_chosen_logps: torch.FloatTensor,
@@ -1314,6 +1339,7 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         return chosen_logits, rejected_logits
 
     def loss(self,
+             batch: Dict,
              policy_chosen_logits: torch.FloatTensor,
              policy_rejected_logits: torch.FloatTensor,
              *args) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
@@ -1358,7 +1384,7 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         metrics = {}
         
         policy_chosen_logits, policy_rejected_logits = self.forward(self.policy, batch)
-        losses, chosen_rewards, rejected_rewards = self.loss(policy_chosen_logits, policy_rejected_logits)
+        losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logits, policy_rejected_logits)
         
         # Compute accuracy
         reward_accuracies = (chosen_rewards > rejected_rewards).float()

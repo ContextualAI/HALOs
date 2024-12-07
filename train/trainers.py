@@ -93,6 +93,13 @@ class BasicTrainer(object):
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.num_skip_batches = num_skip_batches # when loading from checkpoint
+
+        self.reward_model = kwargs.get('reward_model', None)
+        self.reward_tokenizer = kwargs.get('reward_tokenizer', None)
+        if self.reward_model is not None:
+            assert self.reward_tokenizer is not None, "reward_tokenizer must be provided when using reward_model"
+            self.reward_model.eval()
+
         self.prepare_accelerator()
 
     def prepare_accelerator(self):
@@ -105,6 +112,9 @@ class BasicTrainer(object):
             self.optimizer, 
             self.scheduler
         )
+
+        if self.reward_model:
+            self.reward_model = self.accelerator.prepare(self.reward_model)
 
     def get_batch_logps(self, logits: torch.FloatTensor, labels: torch.LongTensor):
         """Compute the token-level log probabilities of the given labels under the given logits."""
@@ -860,24 +870,6 @@ class KTOZeroTrainer(UnpairedPreferenceTrainer):
 class PPOTrainer(BasicTrainer):
     policy_hf_model_class = AutoModelForCausalLMWithValueHead
     use_reference_model = True
-
-    """One-step, offline variant of PPO."""
-    def __init__(self, 
-                 *args, 
-                 **kwargs):
-        """Initialize the PPO trainer, optionally with a reward model.
-        
-        Args:
-            reward_model: Optional model that predicts reward scores. If None, uses binary labels.
-            *args, **kwargs: Arguments passed to BasicTrainer
-        """
-        super().__init__(*args, **kwargs)
-        self.reward_model = kwargs.get('reward_model', None)
-        self.reward_tokenizer = kwargs.get('reward_tokenizer', None)
-        if self.reward_model is not None:
-            assert self.reward_tokenizer is not None, "reward_tokenizer must be provided when using reward_model"
-            self.reward_model, self.reward_tokenizer = self.accelerator.prepare(self.reward_model, self.reward_tokenizer)
-            self.reward_model.eval()
             
     def prepare_accelerator(self):
         """Prepare the Accelerator."""
@@ -890,6 +882,9 @@ class PPOTrainer(BasicTrainer):
             self.optimizer, 
             self.scheduler
         )
+
+        if self.reward_model:
+            self.reward_model = self.accelerator.prepare(self.reward_model)
 
     def forward(self, model: AutoModelForCausalLMWithValueHead, batch: Dict[str, Union[List, torch.LongTensor]], is_policy: bool=True, use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.

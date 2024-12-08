@@ -96,7 +96,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 6. We can now evaluate the aligned model. First, to evaluate on AlpacaEval (you need to set OPENAI_API_KEY for this to work):
 
    ```console
-   python -m eval.sample_for_alpacaeval /data/models/llama3-8b_sft_dummy-kto/FINAL --gpu_count 1 --output_file outputs/llama3-8b_sft_dummy-kto.json
+   python -m train.sample /data/models/llama3-8b_sft_dummy-kto/FINAL --gpu_count 1 --output_file outputs/llama3-8b_sft_dummy-kto.json --datasets alpacaeval
    alpaca_eval evaluate --is_overwrite_leaderboard=True --model_outputs=outputs/llama3-8b_sft_dummy-kto.json
    ```
 

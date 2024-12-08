@@ -75,8 +75,10 @@ def main(args):
         top_p=args.top_p,
         max_tokens=args.max_tokens,
         stop=['<|im_end|>'],
+        n=args.num_samples
     )
 
+    prompt_idx = 0
     # Open the output file and create a streaming writer
     with open(args.output_file, 'w') as f:
         writer = StreamingJSONWriter(f)
@@ -106,14 +108,19 @@ def main(args):
 
                 # Process and write each output
                 for prompt, response in zip(metadata, responses):
-                    output = {
-                        "instruction": re.sub(r"<?\|(im_start|im_end)\|>?", "", prompt),
-                        "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", response.outputs[0].text.strip()),
-                        "generator": args.model_path,
-                        "dataset": dataset,
-                        "split": args.split
-                    }
-                    writer.write_item(output)
+                    for sample_idx, sample in enumerate(response.outputs):
+                        output = {
+                            "instruction": re.sub(r"<?\|(im_start|im_end)\|>?", "", prompt),
+                            "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
+                            "generator": args.model_path,
+                            "dataset": dataset,
+                            "split": args.split,
+                            "prompt_id": prompt_idx,
+                            "sample_id": sample_idx
+                        }
+                        writer.write_item(output)
+
+                    prompt_idx += 1
 
         writer.close()
 
@@ -133,6 +140,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1000, help="Batch size for processing datasets")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--split", type=str, default="test", help="Dataset split to use (train/test)")
+    parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to generate per input")
   
     args = parser.parse_args()
     main(args)

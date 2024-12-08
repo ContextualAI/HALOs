@@ -75,7 +75,7 @@ lm_eval --model hf \
   --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot \
   --batch_size 4
 
-python -m eval.sample_for_alpacaeval \$CKPT --gpu_count 2 --output_file outputs/qwen2-5-3b-instruct-kto-01-${WEIGHTD}D-5e-6.json
+python -m train.sample \$CKPT --gpu_count 4 --output_file outputs/qwen2-5-3b-instruct-kto-01-${WEIGHTD}D-5e-6.json --datasets alpacaeval
 "
 
 

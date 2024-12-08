@@ -633,6 +633,10 @@ class SFTDataLoader(DataLoader):
                         done = True
                         break
 
+            if batch != []:
+                yield self.collate(batch) # flush
+                batch = []
+
             epoch_idx += 1
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
                 done = True
@@ -727,6 +731,10 @@ class ConditionalSFTDataLoader(DataLoader):
                         rank0_print(f'Finished generating {example_idx} examples on {self.split} split')
                         done = True
                         break
+
+            if batch != []:
+                yield self.collate(batch) # flush
+                batch = []
 
             epoch_idx += 1
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
@@ -834,6 +842,10 @@ class UnpairedPreferenceDataLoader(DataLoader):
                         rank0_print(f'Finished generating {example_idx} examples on {self.split} split')
                         done = True
                         break
+
+            if batch != []:
+                yield self.collate(batch) # flush
+                batch = []
 
             epoch_idx += 1
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:
@@ -947,6 +959,10 @@ class PairedPreferenceDataLoader(DataLoader):
                         rank0_print(f'Finished {example_idx} examples on {self.split} split')
                         done = True
                         break
+
+            if batch != []:
+                yield self.collate(batch) # flush
+                batch = []
 
             epoch_idx += 1
             if self.n_epochs is not None and epoch_idx >= self.n_epochs:

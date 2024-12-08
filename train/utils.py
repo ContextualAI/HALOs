@@ -7,15 +7,36 @@ import os
 from datetime import datetime
 import torch
 import torch.distributed as dist
-import inspect
-import importlib.util
 import os
-from typing import Dict, Union, Type, List
+import json
+from typing import Dict, Union, Type, List, TextIO
 from collections.abc import Mapping
 
 import huggingface_hub
 from huggingface_hub import HfApi, HfFolder
 from huggingface_hub.utils import LocalTokenNotFoundError
+
+
+class StreamingJSONWriter:
+    """Writes JSON arrays to a file in a streaming fashion."""
+    def __init__(self, file: TextIO):
+        self.file = file
+        self.is_first = True
+        self.file.write('[\n')
+    
+    def write_item(self, item: Dict):
+        """Write a single item to the JSON array."""
+        if not self.is_first:
+            self.file.write(',\n')
+        json.dump(item, self.file, indent=2)
+        self.is_first = False
+        # Flush after each write to ensure immediate disk writing
+        self.file.flush()
+    
+    def close(self):
+        """Close the JSON array and the file."""
+        self.file.write('\n]')
+        self.file.flush()
 
 
 def get_base_model_state_dict_from_peft(peft_state_dict, lora_alpha, lora_r):

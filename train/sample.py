@@ -4,7 +4,6 @@ import sys
 import re
 import os
 import inspect
-from typing import List, Dict, TextIO
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
 from train.dataloader import SFTDataLoader
@@ -14,28 +13,7 @@ from vllm.distributed.parallel_state import (
     destroy_distributed_environment,
 )
 import train.dataloader as dataloader_module
-
-
-class StreamingJSONWriter:
-    """Writes JSON arrays to a file in a streaming fashion."""
-    def __init__(self, file: TextIO):
-        self.file = file
-        self.is_first = True
-        self.file.write('[\n')
-    
-    def write_item(self, item: Dict):
-        """Write a single item to the JSON array."""
-        if not self.is_first:
-            self.file.write(',\n')
-        json.dump(item, self.file, indent=2)
-        self.is_first = False
-        # Flush after each write to ensure immediate disk writing
-        self.file.flush()
-    
-    def close(self):
-        """Close the JSON array and the file."""
-        self.file.write('\n]')
-        self.file.flush()
+from .utils import StreamingJSONWriter
 
 
 def get_available_datasets():
@@ -74,7 +52,7 @@ def main(args):
         temperature=args.temperature,
         top_p=args.top_p,
         max_tokens=args.max_tokens,
-        stop=['<|im_end|>'],
+        stop=[args.stop_token],
         n=args.num_samples
     )
 
@@ -107,11 +85,13 @@ def main(args):
                 responses = llm.generate(prompts, sampling_params)
 
                 # Process and write each output
-                for prompt, response in zip(metadata, responses):
+                for formatted_prompt, unformatted_prompt, response in zip(prompts, metadata, responses):
                     for sample_idx, sample in enumerate(response.outputs):
                         output = {
-                            "instruction": re.sub(r"<?\|(im_start|im_end)\|>?", "", prompt),
+                            "instruction": unformatted_prompt,
                             "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
+                            "raw_input": formatted_prompt,
+                            "raw_output": sample.text + args.stop_token,
                             "generator": args.model_path,
                             "dataset": dataset,
                             "split": args.split,
@@ -141,6 +121,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--split", type=str, default="test", help="Dataset split to use (train/test)")
     parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to generate per input")
+    parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
   
     args = parser.parse_args()
     main(args)

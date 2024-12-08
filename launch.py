@@ -291,6 +291,7 @@ def main(config: DictConfig):
         os.path.join(config.local_run_dir, 'FINAL'), 
         metrics={'counter': trainer.example_counter}
     )
+    accelerator.end_training()
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def hydra_main(config: DictConfig):

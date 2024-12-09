@@ -17,6 +17,8 @@ The resulting JSON file with have items with the following fields:
 - sample_id: integer from 0 to k - 1 for one of the k samples produced per prompt_id
 
 The (prompt_id, sample_id) pair uniquely identifies each entry.
+
+Note that the keys 'instruction', 'output' are necessary to run Alpacaeval on the samples.
 """
 import argparse
 import re

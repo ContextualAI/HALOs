@@ -5,7 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 """
 Contains the classes necessary for doing PPO (offline, one-step) with language model.
-This code is largely from the TRL library, with some modifications to ensure stability.
+This code is partially from the TRL library, with some modifications to ensure stability.
 """
 import json
 import os

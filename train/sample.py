@@ -1,6 +1,24 @@
+"""
+A script for sampling from LLMs. It should be run like this:
+
+python -m train.sample /models/llama3-8B-sft/FINAL --outputs_file outputs.json \ 
+    --gpu_count 4 --datasets alpacaeval --num_samples 4
+
+The resulting JSON file with have items with the following fields:
+
+- instruction: clean prompt, without the the chat template 
+- output: clean output, without the chat template
+- raw_input: unformatted prompt, with the chat template still applied
+- raw_output: unformatted output, with the chat template still applied
+- generator: path to either local model dir or Huggingface repo
+- dataset: specific dataset that the prompt is from 
+- split: either 'train' or 'test'
+- prompt_id: unique integer for the prompt
+- sample_id: integer from 0 to k - 1 for one of the k samples produced per prompt_id
+
+The (prompt_id, sample_id) pair uniquely identifies each entry.
+"""
 import argparse
-import json
-import sys
 import re
 import os
 import inspect

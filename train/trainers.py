@@ -7,9 +7,12 @@
 Extendable Trainer classes for aligning LLMs.
 The specific class that should be used should be specified in the loss file under config/loss.
 
-The BasicTrainer contains the core methods (e.g., sharding, basic training loop, etc.).
-The SFTTrainer, PairedPreferenceTrainer, and UnpairedPreferenceTrainer all subclass BasicTrainer
-and override the get_batch_metrics() and (optionally) forward() methods.
+- The BasicTrainer contains the core methods (e.g., sharding, basic training loop, etc.).
+- The SFTTrainer, PairedPreferenceTrainer, and UnpairedPreferenceTrainer all subclass BasicTrainer
+  and override the get_batch_metrics() and (optionally) forward() methods.
+- The PPOTrainer is a little different, since it also uses a reward model to judge examples before 
+  updating the policy---note that there is no active sampling, as in standard online PPO.
+- The BradleyTerryTrainer is used for training a Bradley-Terry reward model over paired preferences.
 
 The trainer for each loss should subclass either PairedPreferenceTrainer or UnpairedPreferenceTrainer.
 """

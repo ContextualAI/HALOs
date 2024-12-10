@@ -1,14 +1,17 @@
 #!/bin/bash
-#SBATCH --job-name=multinode-test
-#SBATCH --nodes=2
+#SBATCH --job-name=llama-sft-ipo
+#SBATCH --nodes=1
 #SBATCH --mem=100G
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:2
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
 #SBATCH --time=23:55:00
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
+
+BETA=$1
+LR=$2
 
 # Function to find an available port
 find_free_port() {
@@ -32,7 +35,7 @@ init_env() {
 
     # Activate your conda environment
     source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate halos
+    conda activate halos_6
 
     echo "Running on node: $(hostname)"
     echo "Machine Rank: $SLURM_PROCID"
@@ -51,16 +54,28 @@ export -f find_free_port
 export -f init_env
 
 # Run the training script using srun
-srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c '
+srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
+export MODEL_PATH=meta-llama/Meta-Llama-3-8B
+export CKPT=/scratch/gpfs/ke7953/models/llama3-8B-sft-ipo-${BETA}-${LR}/FINAL
+
 accelerate launch \
-    --config_file accelerate_config/fsdp_2x2gpu.yaml \
-    --machine_rank $SLURM_PROCID \
-    --main_process_ip $MASTER_ADDR \
-    --main_process_port $MASTER_PORT \
-    launch.py loss=kto model=llama datasets=[ultrafeedback_hybrid] exp_name=llama-test \
+    --config_file accelerate_config/fsdp_4gpu.yaml \
+    --machine_rank \$SLURM_PROCID \
+    --main_process_ip \$MASTER_ADDR \
+    --main_process_port \$MASTER_PORT \
+    launch.py loss=ipo model=llama datasets=[ultrabin] exp_name=llama3-8B-sft-ipo-${BETA}-${LR} \
     ++cache_dir=/scratch/gpfs/ke7953/models \
-    ++model.name_or_path=meta-llama/Meta-Llama-3-8B \
-    ++lr=1e-6 \
-    ++loss.beta=0.1
-'
+    ++model.name_or_path=\$MODEL_PATH \
+    ++lr=${LR} \
+    ++loss.beta=${BETA} \
+    ++model.batch_size=4 ++model.gradient_accumulation_steps=8 ++model.eval_batch_size=4 \
+    ++model.load_from=/scratch/gpfs/ke7953/models/llama3-8B-sft/FINAL
+
+lm_eval --model hf \
+  --model_args pretrained=\$CKPT,tokenizer=\$CKPT,parallelize=True \
+  --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot \
+  --batch_size 4
+
+python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/llama3-8b-sft-ipo-${BETA}-${LR}.json
+"

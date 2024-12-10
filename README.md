@@ -117,7 +117,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 
 1. Do you support multi-node training?
 
-   Yes, see the `launch_multinode_batch.sh` and `launch_multinode_interactive.sh` for how to launch jobs across two nodes in a batch or interactive Slurm job. You may need a custom Accelerate configuration depending on how many nodes you have. Use the 2-node examples in `accelerate_config` as a template.
+   Yes, see the `scripts/launch_multinode_batch.sh` and `scripts/launch_multinode_interactive.sh` for how to launch jobs across two nodes in a batch or interactive Slurm job. You may need a custom Accelerate configuration depending on how many nodes you have. Use the 2-node examples in `accelerate_config` as a template.
 
 2. How do I save intermediate checkpoints?
 

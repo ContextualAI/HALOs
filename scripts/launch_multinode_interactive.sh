@@ -12,7 +12,7 @@ init_env() {
 
     # Activate your conda environment
     source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate halos
+    conda activate halos_6
 
     echo "Running on node: $(hostname)"
     echo "Machine Rank: $SLURM_PROCID"
@@ -35,7 +35,7 @@ init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
 
 accelerate launch \
-    --config_file accelerate_config/fsdp_2x4gpu.yaml \
+    --config_file accelerate_config/fsdp_2x2gpu.yaml \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
@@ -44,7 +44,6 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=1e-6 \
     ++model.batch_size=2 ++model.gradient_accumulation_steps=16 ++model.eval_batch_size=2 \
-    ++model.max_length=2048 ++model.max_prompt_length=1800 \
     ++loss.beta=10 ++loss.gamma_beta_ratio=0.3 \
     ++model.max_grad_norm=100
 "

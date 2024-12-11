@@ -113,7 +113,8 @@ def convert_batch_to_binary_feedback(batch: List[Dict], threshold: float=0.5) ->
             'output': sample['output'],
             'sample_id': sample['sample_id'],
             'label': 1 if sample['reward'] > threshold else 0,
-            'reward': sample['reward']
+            'reward': sample['reward'],
+            'type': 'binary_feedback',
         }
         feedback.append(feedback_item)
     return feedback
@@ -147,7 +148,7 @@ def convert_batch_to_pairwise_feedback(batch: List[Dict], seed: int, threshold: 
             continue
         
         # Sort by reward
-        group.sort(key=lambda x: x['sample_id'])
+        group.sort(key=lambda x: x['reward'], reverse=True)
         
         # Create pairs
         for i in range(len(group) - 1):
@@ -177,7 +178,8 @@ def convert_batch_to_pairwise_feedback(batch: List[Dict], seed: int, threshold: 
                 'label': label,
                 'reward_A': sample_A['reward'],
                 'reward_B': sample_B['reward'],
-                'reward_difference': abs(sample_A['reward'] - sample_B['reward'])
+                'reward_difference': abs(sample_A['reward'] - sample_B['reward']),
+                'type': 'pairwise_feedback',
             }
             feedback.append(feedback_item)
     

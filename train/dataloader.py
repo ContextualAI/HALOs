@@ -12,8 +12,8 @@ Each Example object will contain
 - a list L of generations
 - the index in L of the generation that should be the finetuning target
 - a list S of the scores for the generations
-- for binary feedback data: pairs of indices (i,j) in L, where generation i is preferable to generation j
-- for unary feedback data: whether each generation is desirable/chosen or undesirable/rejected
+- for preference feedback data: pairs of indices (i,j) in L, where generation i is preferable to generation j
+- for binary feedback data: whether each generation is desirable/chosen or undesirable/rejected
 - whether to truncate the beginning or end if the maximum number of tokens is exceeded
 - the dataset name
 - the unformatted prompt
@@ -43,8 +43,8 @@ class Example:
     generations: List = field(default_factory=list)             # list of list of turns (the output sequences to predict)
     sft_index: int = -1                                         # which response in self.generations should be generated for SFT
     scores: List[float] = field(default_factory=list)           # score for each generation
-    pairs: List[Tuple[int, int]] = field(default_factory=list)  # for binary feedback data: indices in responses, where i > j in pair (i,j) is a preference
-    desirable: List[bool] = field(default_factory=list)         # for unary feedback data: whether the generation at the corresponding index in self.generations is desirable 
+    pairs: List[Tuple[int, int]] = field(default_factory=list)  # for preference feedback data: indices in responses, where i > j in pair (i,j) is a preference
+    desirable: List[bool] = field(default_factory=list)         # for binary feedback data: whether the generation at the corresponding index in self.generations is desirable 
     truncation_mode: str = 'keep_end'                           # if truncation needed, keep the beginning (keep_start) or end (keep_end) (only override default for SHP)
     dataset_name: str = ''
     original_prompt: str = ''                                   # the unformatted prompt (needed to recover instruction for AlpacaEval)
@@ -126,6 +126,103 @@ def get_alpacaeval(split: str) -> Dataset:
         data[row['instruction']].original_prompt = row['instruction']
         data[row['instruction']].sft_index = 0
 
+    return data
+
+
+def get_feedback(feedback_path: str) -> Dataset:
+    """
+    Load feedback data created by label.py and convert it into a Dataset.
+    Supports both binary and pairwise feedback formats.
+
+    Args:
+        feedback_path: path to the JSON file containing feedback data
+
+    Returns:
+        A Dataset instance containing the feedback data.
+    """
+    rank0_print(f'Loading feedback dataset from {feedback_path}...')
+    
+    # Load all feedback data
+    with open(feedback_path, 'r') as f:
+        feedback_data = json.load(f)
+    
+    if not feedback_data:
+        raise ValueError(f"No feedback data found in {feedback_path}")
+    
+    data = Dataset('feedback')
+
+    # Group samples by prompt_id to ensure we handle all samples for each prompt together
+    grouped_samples = defaultdict(list)
+    for item in feedback_data:
+        grouped_samples[item['prompt_id']].append(item)
+    
+    for prompt_id, samples in grouped_samples.items():
+        if not samples: continue
+
+        feedback_type = samples[0].get('type', None)   
+        if not feedback_type:
+            raise ValueError("Feedback type not specified in data") 
+        
+        if feedback_type == 'binary_feedback':
+            # Use the first sample's instruction as the prompt
+            prompt = samples[0]['instruction']
+            example = Example()
+            example.prompt = [{"role": "user", "content": prompt}]
+            example.original_prompt = prompt
+            example.dataset_name = 'feedback'
+            
+            # Add each sample's output and its desirability based on the label
+            for sample in samples:
+                example.generations.append([{"role": "assistant", "content": sample['output']}])
+                example.desirable.append(bool(sample['label']))
+                example.scores.append(sample['reward'])
+            
+            # For binary feedback, use any desirable response as the SFT target
+            # If no desirable responses, use the highest scoring one
+            desirable_indices = [i for i, d in enumerate(example.desirable) if d]
+            if desirable_indices:
+                example.sft_index = desirable_indices[0]
+            else:
+                example.sft_index = max(range(len(example.scores)), key=lambda i: example.scores[i])
+                
+            data[prompt] = example
+            
+        elif feedback_type == 'pairwise_feedback':
+            pairs = samples
+            prompt = pairs[0]['instruction']
+            example = Example()
+            example.prompt = [{"role": "user", "content": prompt}]
+            example.original_prompt = prompt
+            example.dataset_name = 'feedback'
+            
+            # Track unique outputs to avoid duplicates
+            output_to_idx = {}
+            
+            for pair in pairs:
+                # Add outputs if not already added
+                if pair['output_A'] not in output_to_idx:
+                    output_to_idx[pair['output_A']] = len(example.generations)
+                    example.generations.append([{"role": "assistant", "content": pair['output_A']}])
+                    example.scores.append(pair['reward_A'])
+                    
+                if pair['output_B'] not in output_to_idx:
+                    output_to_idx[pair['output_B']] = len(example.generations)
+                    example.generations.append([{"role": "assistant", "content": pair['output_B']}])
+                    example.scores.append(pair['reward_B'])
+                
+                # Add preference pair
+                if pair['label'] == 1:
+                    example.pairs.append((output_to_idx[pair['output_A']], output_to_idx[pair['output_B']]))
+                else:
+                    example.pairs.append((output_to_idx[pair['output_B']], output_to_idx[pair['output_A']]))
+            
+            # Use highest scoring response as SFT target
+            example.sft_index = max(range(len(example.scores)), key=lambda i: example.scores[i])
+            
+            data[prompt] = example
+        else:
+            raise ValueError(f"Unsupported feedback type: {feedback_type}")
+    
     return data
 
 
@@ -410,7 +507,7 @@ class DataLoader:
     """
     The base data loader class, similar to the one from the DPO repo.
     Subclass this and overwrite the __iter__ method as needed, since the batcch elements will be different depending
-    on whether you're doing SFT, aligning with a pairwise loss like DPO, or alignment with a unary loss like KTO. 
+    on whether you're doing SFT, aligning with a pairwise loss like DPO, or alignment with an unpaired loss like KTO. 
     """
     def __init__(self, 
                  dataset_names: List[str],
@@ -445,8 +542,15 @@ class DataLoader:
         self.full_data = {} # a dict of Examples
 
         for name in dataset_names:
-            dataset = globals()[f"get_{name}"](split)
-            self.full_data.update(dataset.data)
+            if f"get_{name}" in globals():
+                dataset = globals()[f"get_{name}"](split)
+                self.full_data.update(dataset.data)
+            else:
+                try:
+                    dataset = get_feedback(name)
+                    self.full_data.update(dataset.data)
+                except:
+                    raise IOError(f"could not load {name}")
 
         self.num_training_steps = self.get_num_training_steps()
 
@@ -859,7 +963,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
         return num_training_steps
 
 
-class ScoreUnaryDataLoader(UnpairedPreferenceDataLoader):
+class ScoreDataLoader(UnpairedPreferenceDataLoader):
     def get_flat_data(self, prompts):
         """
         Return a flat list of examples given a list of prompts that index self.full_data.
@@ -885,7 +989,7 @@ class ScoreUnaryDataLoader(UnpairedPreferenceDataLoader):
         return flat_data
 
 
-class PrefUnaryDataLoader(UnpairedPreferenceDataLoader):
+class HalfPrefDataLoader(UnpairedPreferenceDataLoader):
     """
     Dataloader for training on only one output per input.
     This throws out at least half the data (more than half if there are multiple pairs per input).

@@ -26,6 +26,7 @@ from collections import defaultdict
 def create_batches_respecting_prompts(samples: List[Dict], batch_size: int) -> Iterator[List[Dict]]:
     """
     Create batches that keep samples with the same prompt_id together while respecting max batch size.
+    This is needed for creating pairwise feedback.
     """
     # Group samples by prompt_id
     grouped = defaultdict(list)
@@ -211,7 +212,7 @@ def main(args):
         samples = json.load(f)
 
     # Set up batching strategy based on feedback type
-    if args.feedback_type == 'binary':
+    if args.feedback_type == 'pairwise':
         batch_iterator = create_batches_respecting_prompts(samples, args.batch_size)
     else:
         batch_iterator = create_simple_batches(samples, args.batch_size)
@@ -265,16 +266,9 @@ if __name__ == "__main__":
                         help="Maximum sequence length for reward model input")
     parser.add_argument("--feedback_type", type=str, choices=['binary', 'pairwise', None], default=None,
                         help="Type of feedback to generate (either binary, pairwise, or just annotate with rewards)")
-    parser.add_argument("--threshold", type=float, default=None,
+    parser.add_argument("--threshold", type=float, default=0,
                         help="Reward threshold for feedback (absolute threshold for binary feedback and minimum reward difference for pairwise)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for pairwise feedback generation")
 
     args = parser.parse_args()
-
-    if args.threshold is None:
-        if args.feedback_type == 'binary':
-            args.threshold = 0.5
-        elif args.feedback_type == 'pairwise':
-            args.threshold = 0
-
     main(args)

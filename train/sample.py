@@ -1,15 +1,14 @@
 """
 A script for sampling from LLMs. It should be run like this:
 
-python -m train.sample /models/llama3-8B-sft/FINAL --outputs_file outputs.json \ 
+python -m train.sample /models/llama3-8B-sft/FINAL --output_file outputs.json \ 
     --gpu_count 4 --datasets alpacaeval --num_samples 4
 
 The resulting JSON file with have items with the following fields:
 
-- instruction: clean prompt, without the the chat template 
+- prompt: a list of key-value pairs with speaker and content
+- instruction: only for one-turn eval datasets like alpacaeval
 - output: clean output, without the chat template
-- raw_input: unformatted prompt, with the chat template still applied
-- raw_output: unformatted output, with the chat template still applied
 - generator: path to either local model dir or Huggingface repo
 - dataset: specific dataset that the prompt is from 
 - split: either 'train' or 'test'
@@ -98,25 +97,22 @@ def main(args):
 
             # Process the dataset in batches
             for batch_idx, batch in enumerate(dataloader):
-                prompts = batch['prompt_text']
-                metadata = batch['original_prompt'] if 'original_prompt' in batch else batch['prompt_text']
-
-                print(f"Generating responses for batch {batch_idx + 1} ({len(prompts)} prompts)...")
-                responses = llm.generate(prompts, sampling_params)
+                print(f"Generating responses for batch {batch_idx + 1} ...")
+                # prompt_text has already had the chat template applied
+                responses = llm.generate(batch['prompt_text'], sampling_params)
 
                 # Process and write each output
-                for formatted_prompt, unformatted_prompt, response in zip(prompts, metadata, responses):
+                for prompt, response in zip(batch['prompt'], responses):
                     for sample_idx, sample in enumerate(response.outputs):
                         output = {
-                            "instruction": unformatted_prompt,
+                            "prompt": prompt, # list of turns making up the conversation history
+                            "instruction": prompt[0]["content"], # for one-turn eval datasets only (e.g., alpacaeval)
                             "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
-                            "raw_input": formatted_prompt,
-                            "raw_output": sample.text + args.stop_token,
                             "generator": args.model_path,
-                            "dataset": dataset,
-                            "split": args.split,
+                            "dataset": f"{dataset}_{args.split}",
                             "prompt_id": prompt_idx,
-                            "sample_id": sample_idx
+                            "sample_id": sample_idx,
+                            "type": "sample",
                         }
                         writer.write_item(output)
 

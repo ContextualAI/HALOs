@@ -33,6 +33,8 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 2. Determine whether you need a new dataset. If you have a dataset that you want to refer to as `foo` when you launch jobs, add a function called `get_foo` in `dataloader.py` that will return a `Dataset` instance. This function should have the following signature, where `split` should be either `train` or `test`:
 
    ```def get_foo(split: str, *args, **kwargs) -> Dataset:```
+
+   Alternatively, you can have a dataset as a JSON file, where each object has the fields in `examples/binary_feedback` or `examples/pairwise_feedback`. You would pass the path to the dataset (e.g., `examples/binary_feedback`) instead of its name.
     
    Determine whether you need a new dataloader. Each loss in `config/loss/` has one corresponding dataloader; for KTO, it is `dataloader.UnpairedPreferenceDataLoader`. You will probably not need to write a new dataloader unless you are doing something creative, like turning score-based data into preferences or binary feedback. 
 
@@ -42,7 +44,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
 
    ```python
    class DummyKTOTrainer(UnpairedPreferenceTrainer):
-      """A fake version of KTO meant to introduce you to the HALOs repo."""
+      """A fake version of KTO (not the actual one!) meant to introduce you to the HALOs repo."""
       def loss(self,
            policy_chosen_logps: torch.FloatTensor,
            policy_rejected_logps: torch.FloatTensor,
@@ -54,7 +56,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
       chosen_logratios = (policy_chosen_logps - reference_chosen_logps)
       rejected_logratios = (policy_rejected_logps - reference_rejected_logps)
 
-      losses = torch.cat((1 - F.sigmoid(self.config.loss.beta * (chosen_logratios - rejected_KL)), 1 - F.sigmoid(self.config.loss.beta * (chosen_KL - rejected_logratios))), 0)
+      losses = torch.cat((1 - F.sigmoid(self.config.loss.beta * (chosen_logratios - chosen_KL)), 1 - F.sigmoid(self.config.loss.beta * (rejected_KL - rejected_logratios))), 0)
 
       chosen_rewards = self.config.loss.beta * (policy_chosen_logps - reference_chosen_logps).detach()
       rejected_rewards = self.config.loss.beta * (policy_rejected_logps - reference_rejected_logps).detach()
@@ -82,7 +84,7 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
       launch.py \                                        # main file for launching job
       loss=dummy-kto \                                   # must be a file name in config/loss
       model=llama \                                      # must be a file name in config/model
-      datasets=[ultrabin,shp] \                          # list of datasets, each with a method (e.g., get_shp) in train/dataloader.py
+      datasets=[ultrabin,examples/binary_feedback.json] \ # ultrabin is a Huggingface dataset; binary_feedback.json is a local file
       exp_name=llama3-8b_sft_dummy-kto \                 # experiment name, also the subfolder in cache dir for saving the model          
       ++cache_dir=/data/models \                               # set the cache directory 
       ++model.name_or_path=meta-llama/Meta-Llama-3-8B \        # HF (or local) repo containing model configs, vocab, etc.
@@ -110,8 +112,16 @@ which will save a model to `/data/models/llama3-8b_sft_kto/FINAL`.
    --batch_size 4    # bug if you use 'auto' with gsm8k_cot
    ```
 
-   These steps are combined in `benchmark.sh`.
+7. If we wanted to turn this sampled data into a new feedback dataset to do another round of alignment, we could do
 
+   ```console
+   accelerate launch --config_file accelerate_config/fsdp_4gpu.yaml --main_process_port 29500 label.py \
+      /data/models/llama3-8B-bt/FINAL outputs/llama3-8b_sft_dummy-kto.json \ 
+      pairwise_feedback_dataset.json --feedback_type pairwise
+   ```
+
+   where `/data/models/llama3-8B-bt/FINAL` came from training a reward model on top of an LLM using the `BradleyTerryTrainer`.
+   
 
 ## FAQs
 

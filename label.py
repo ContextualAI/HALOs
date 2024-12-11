@@ -201,7 +201,7 @@ def main(args):
         args.reward_model_path,
         local_files_only=True,
         trust_remote_code=True
-    )
+    ) 
 
     reward_model = accelerator.prepare(reward_model)
 
@@ -210,6 +210,11 @@ def main(args):
 
     with open(args.samples_path, 'r') as f:
         samples = json.load(f)
+    
+    # get train and test splits, with no prompts appearing in both
+    prompt_ids = list(set([ item['prompt_id'] for item in samples ]))
+    test_prompt_ids = prompt_ids[:int(args.fraction_test * len(prompt_ids))]
+    train_prompt_ids = prompt_ids[int(args.fraction_test * len(prompt_ids)):]
 
     # Set up batching strategy based on feedback type
     if args.feedback_type == 'pairwise':
@@ -247,6 +252,13 @@ def main(args):
         # Write feedback (only on main process)
         if accelerator.is_main_process:
             for item in feedback_batch:
+                if item['prompt_id'] in train_prompt_ids:
+                    item['split'] = 'train'
+                elif item['prompt_id'] in test_prompt_ids:
+                    item['split'] = 'test'
+                else:
+                    continue 
+
                 writer.write_item(item)
 
     # Close writer
@@ -269,6 +281,8 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0,
                         help="Reward threshold for feedback (absolute threshold for binary feedback and minimum reward difference for pairwise)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for pairwise feedback generation")
+    parser.add_argument("--fraction_test", type=float, default=0.1,
+                        help="Fraction of prompts to use for test set (default: 0.1)")
 
     args = parser.parse_args()
     main(args)

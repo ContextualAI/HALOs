@@ -129,13 +129,14 @@ def get_alpacaeval(split: str) -> Dataset:
     return data
 
 
-def get_feedback(feedback_path: str) -> Dataset:
+def get_feedback(feedback_path: str, split: str) -> Dataset:
     """
     Load feedback data created by label.py and convert it into a Dataset.
     Supports both binary and pairwise feedback formats.
 
     Args:
         feedback_path: path to the JSON file containing feedback data
+        split: only include objects whose 'split' value matches the given split
 
     Returns:
         A Dataset instance containing the feedback data.
@@ -162,6 +163,11 @@ def get_feedback(feedback_path: str) -> Dataset:
         feedback_type = samples[0].get('type', None)   
         if not feedback_type:
             raise ValueError("Feedback type not specified in data") 
+        
+        # split is same for all examples with the same prompt
+        feedback_split = samples[0].get('split', None)   
+        if feedback_split != split:
+            continue
         
         if feedback_type == 'binary_feedback':
             # Use the first sample's instruction as the prompt
@@ -547,7 +553,7 @@ class DataLoader:
                 self.full_data.update(dataset.data)
             else:
                 try:
-                    dataset = get_feedback(name)
+                    dataset = get_feedback(name, split)
                     self.full_data.update(dataset.data)
                 except:
                     raise IOError(f"could not load {name}")

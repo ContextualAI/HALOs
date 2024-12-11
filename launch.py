@@ -292,6 +292,8 @@ def main(config: DictConfig):
         metrics={'counter': trainer.example_counter}
     )
     accelerator.end_training()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 @hydra.main(version_base=None, config_path="config", config_name="config")
 def hydra_main(config: DictConfig):

@@ -64,7 +64,7 @@ def main(args):
     print(f"Loading model and tokenizer from {args.model_path}")
     llm = LLM(model=args.model_path, tensor_parallel_size=args.gpu_count)
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
-    tokenizer.chat_template = open('template.jinja').read()
+    tokenizer.chat_template = open('config/template.jinja').read()
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
 

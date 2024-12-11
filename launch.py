@@ -100,7 +100,7 @@ def main(config: DictConfig):
     special_tokens = []
     # Check if the tokenizer has a chat template and set a default one if it doesn't
     if not tokenizer.chat_template:
-        with open("template.jinja") as f:
+        with open("config/template.jinja") as f:
             tokenizer.chat_template = f.read()
 
         accelerator.print("Default chat template set.")

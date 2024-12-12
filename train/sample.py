@@ -72,7 +72,7 @@ def main(args):
         top_p=args.top_p,
         max_tokens=args.max_tokens,
         stop=[args.stop_token],
-        n=args.num_samples
+        n=args.num_samples_per_prompt
     )
 
     prompt_idx = 0

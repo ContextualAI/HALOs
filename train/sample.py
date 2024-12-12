@@ -2,7 +2,7 @@
 A script for sampling from LLMs. It should be run like this:
 
 python -m train.sample /models/llama3-8B-sft/FINAL --output_file outputs.json \ 
-    --gpu_count 4 --datasets alpacaeval --num_samples 4
+    --gpu_count 4 --datasets alpacaeval --num_samples_per_prompt 4
 
 The resulting JSON file with have items with the following fields:
 
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=1000, help="Batch size for processing datasets")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--split", type=str, default="test", help="Dataset split to use (train/test)")
-    parser.add_argument("--num_samples", type=int, default=1, help="Number of samples to generate per input")
+    parser.add_argument("--num_samples_per_prompt", type=int, default=1, help="Number of samples to generate per input")
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
   
     args = parser.parse_args()

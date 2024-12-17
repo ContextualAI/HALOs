@@ -114,9 +114,9 @@ def main(args):
                         }
 
                         if args.alpacaeval:
-                            output["prompt"] = prompt # list of turns making up the conversation history
-                        else:
                             output["instruction"] = prompt[0]["content"] # for one-turn eval datasets only (e.g., alpacaeval)
+                        else:
+                            output["prompt"] = prompt # list of turns making up the conversation history
 
                         writer.write_item(output)
 

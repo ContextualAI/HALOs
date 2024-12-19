@@ -718,11 +718,19 @@ class KTOTrainer(UnpairedPreferenceTrainer):
 
         The KL term is estimated by matching x with unrelated outputs y', then calculating the average log ratio
         log p_policy(y'|x) - log p_reference(y'|x). Doing so avoids the requirement that there be equal numbers of 
-        desirable and undesirable examples in the microbatch.
+        desirable and undesirable examples in the microbatch. It can be estimated differently: the 'z1' estimate
+        takes the mean reward clamped to be non-negative; the 'z2' estimate takes the mean over rewards when y|x
+        is more probable under the policy than the reference.
         """
-        KL_rewards = policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)
-        # take mean of the KL estimates across all devices in this step
-        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
+        if self.config.loss.type == 'z1':
+            KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
+            KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
+        elif self.config.loss.type == 'z2':
+            KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)).clamp(min=0)
+            KL = self.accelerator.gather(KL_rewards.detach())
+            KL = KL.sum() / (KL > 0).sum().clamp(min=1)
+        else:
+            raise ValueError("KL estimation type must be 'z1' or 'z2'")
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))

@@ -12,3 +12,6 @@ desirable_weight: 1.0
 
 # how much to weigh the losses of undesirable examples (when dataset is imbalanced)
 undesirable_weight: 1.0
+
+# how to estimate the KL term (z1 is the clamped mean; z2 is the rejection sampled version)
+type: 'z2'

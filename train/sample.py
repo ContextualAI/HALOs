@@ -105,7 +105,6 @@ def main(args):
                 for prompt, response in zip(batch['prompt'], responses):
                     for sample_idx, sample in enumerate(response.outputs):
                         output = {
-                            "prompt": prompt,
                             "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
                             "generator": args.model_path,
                             "dataset": f"{dataset}_{args.split}",
@@ -115,9 +114,10 @@ def main(args):
                         }
 
                         # for eval with alpacaeval
-                        if args.datasets == ['alpacaeval']:
-                            output.pop("prompt")
+                        if args.for_eval:
                             output["instruction"] = prompt[0]["content"]
+                        else:
+                            output["prompt"] = prompt
 
                         writer.write_item(output)
 
@@ -143,6 +143,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="test", help="Dataset split to use (train/test)")
     parser.add_argument("--num_samples_per_prompt", type=int, default=1, help="Number of samples to generate per input")
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
+    parser.add_argument("--for_eval", type=bool, default=True, help="for eval with alpacaeval")
   
     args = parser.parse_args()
     main(args)

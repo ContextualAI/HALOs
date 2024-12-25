@@ -56,15 +56,15 @@ export -f init_env
 # Run the training script using srun
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
-export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export CKPT=/scratch/gpfs/ke7953/models/llama3-8B-instruct-kto-${BETA}-${LR}/FINAL
+export MODEL_PATH=meta-llama/Meta-Llama-3-8B
+export CKPT=/scratch/gpfs/ke7953/models/llama3-8B-kto-${BETA}-${LR}/FINAL
 
 accelerate launch \
     --config_file accelerate_config/fsdp_4gpu.yaml \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8B-instruct-kto-${BETA}-${LR} \
+    launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8B-kto-${BETA}-${LR} \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
@@ -76,5 +76,5 @@ lm_eval --model hf \
   --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot \
   --batch_size 4
 
-python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/llama3-8b-instruct-kto-${BETA}-${LR}.json
+python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/llama3-8b-kto-${BETA}-${LR}.json
 "

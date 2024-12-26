@@ -69,7 +69,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} \
-    ++model.batch_size=4 ++model.gradient_accumulation_steps=8 ++model.eval_batch_size=4
+    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32
 
 lm_eval --model hf \
   --model_args pretrained=\$CKPT,tokenizer=\$CKPT,parallelize=True \

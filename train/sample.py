@@ -113,7 +113,7 @@ def main(args):
                         }
 
                         # for eval with alpacaeval
-                        if args.for_eval:
+                        if args.mode == "alpacaeval":
                             output["instruction"] = prompt[0]["content"]
                         else:
                             output["prompt"] = prompt
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     parser.add_argument("--split", type=str, default="test", help="Dataset split to use (train/test)")
     parser.add_argument("--num_samples_per_prompt", type=int, default=1, help="Number of samples to generate per input")
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
-    parser.add_argument("--for_eval", type=bool, default=True, help="for eval with alpacaeval")
+    parser.add_argument("--mode", type=bool, default="alpacaeval", help="mode")
   
     args = parser.parse_args()
     main(args)

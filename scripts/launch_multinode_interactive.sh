@@ -43,7 +43,7 @@ accelerate launch \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=1e-6 \
-    ++model.batch_size=2 ++model.gradient_accumulation_steps=16 ++model.eval_batch_size=2 \
+    ++model.batch_size=16 ++model.gradient_accumulation_steps=2 ++model.eval_batch_size=16 \
     ++loss.beta=10 ++loss.gamma_beta_ratio=0.3 \
     ++model.max_grad_norm=100
 "

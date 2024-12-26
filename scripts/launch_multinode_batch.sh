@@ -63,5 +63,5 @@ accelerate launch \
     ++model.name_or_path=meta-llama/Meta-Llama-3-8B \
     ++lr=1e-6 \
     ++loss.beta=0.1 \
-    ++model.batch_size=8 ++model.gradient_accumulation_steps=4 ++model.eval_batch_size=8
+    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32
 '

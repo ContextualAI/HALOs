@@ -145,9 +145,6 @@ def main(args):
 
     reward_model = accelerator.prepare(reward_model)
 
-    if accelerator.is_main_process:
-        print(f"Loading samples from {args.samples_path}")
-
     # Initialize the dataloader with samples file
     dataloader = SFTDataLoader(
         dataset_names=[args.samples_path],

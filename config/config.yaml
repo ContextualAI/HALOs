@@ -56,7 +56,7 @@ n_examples: null
 n_eval_examples: 256
 
 # evaluate and save model every eval_every steps
-eval_every: 1000
+eval_every: 1024
 
 # the optimizer to use; should be one of the options listed here: https://pytorch.org/docs/stable/optim.html
 optimizer: AdamW

@@ -163,10 +163,10 @@ class BasicTrainer(object):
         """
         Args:
             batch: batch of data, mapping keys to Tensors
-            policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (batch_size,)
-            policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (batch_size,)
-            reference_chosen_logps: Log probabilities of the reference model for the chosen responses. Shape: (batch_size,)
-            reference_rejected_logps: Log probabilities of the reference model for the rejected responses. Shape: (batch_size,)
+            policy_chosen_logps: Log probabilities of the policy model for the chosen responses. Shape: (microbatch_size,)
+            policy_rejected_logps: Log probabilities of the policy model for the rejected responses. Shape: (microbatch_size,)
+            reference_chosen_logps: Log probabilities of the reference model for the chosen responses. Shape: (microbatch_size,)
+            reference_rejected_logps: Log probabilities of the reference model for the rejected responses. Shape: (microbatch_size,)
 
         Returns:
             A tuple of three tensors: (losses, chosen_rewards, rejected_rewards).
@@ -490,7 +490,7 @@ class PairedPreferenceTrainer(BasicTrainer):
         """Concatenate the chosen and rejected inputs into a single tensor. The first half is chosen outputs, the second half is rejected.
 
         Args:
-            batch: A batch of data. Must contain the keys 'chosen_input_ids' and 'rejected_input_ids', which are tensors of shape (batch_size, sequence_length).
+            batch: A batch of data. Must contain the keys 'chosen_input_ids' and 'rejected_input_ids', which are tensors of shape (microbatch_size, sequence_length).
             
         Returns:
             A dictionary containing the concatenated inputs under the key 'concatenated_input_ids'.
@@ -722,15 +722,8 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         takes the mean reward clamped to be non-negative; the 'z2' estimate takes the mean over rewards when y|x
         is more probable under the policy than the reference.
         """
-        if self.config.loss.type == 'z1':
-            KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
-            KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
-        elif self.config.loss.type == 'z2':
-            KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)).clamp(min=0)
-            KL = self.accelerator.gather(KL_rewards.detach())
-            KL = KL.sum() / (KL > 0).sum().clamp(min=1)
-        else:
-            raise ValueError("KL estimation type must be 'z1' or 'z2'")
+        KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
+        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
 
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
@@ -938,7 +931,7 @@ class PPOTrainer(BasicTrainer):
             batch: Dictionary containing batch data
             
         Returns:
-            torch.FloatTensor of shape (batch_size,) containing reward scores
+            torch.FloatTensor of shape (microbatch_size,) containing reward scores
         """
         if self.reward_model is not None:
             # Decode the sequences using policy tokenizer
@@ -1173,12 +1166,12 @@ class PPOTrainer(BasicTrainer):
             # TRAINING
             start_time = time.time()
 
-            batch_size = len(batch['prompt_text'])
+            microbatch_size = len(batch['prompt_text'])
             global_batch_dict = self.get_global_batch_dict(batch)
 
             for ppo_epoch in range(self.config.loss.ppo_epochs):
                 with self.accelerator.accumulate(self.policy):
-                    loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, batch_size, mode='train')
+                    loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, microbatch_size, mode='train')
 
                     for k, v in local_batch_metrics.items():
                         batch_metrics[k].extend(v)
@@ -1192,10 +1185,10 @@ class PPOTrainer(BasicTrainer):
                     self.optimizer.zero_grad()
 
             self.batch_counter += 1
-            self.example_counter += batch_size
+            self.example_counter += microbatch_size * self.accelerator.num_processes
 
             step_time = time.time() - start_time
-            examples_per_second = batch_size / step_time
+            examples_per_second = (microbatch_size * self.accelerator.num_processes) / step_time
             batch_metrics['examples_per_second'].append(examples_per_second)
 
             delete_dicts(global_batch_dict, batch, local_batch_metrics)
@@ -1220,13 +1213,13 @@ class PPOTrainer(BasicTrainer):
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-    def get_batch_metrics(self, global_batch_dict: Dict, batch_size: int=0, mode:str='train'):
+    def get_batch_metrics(self, global_batch_dict: Dict, microbatch_size: int=0, mode:str='train'):
         """
         Given a batch that has been processed in the outer loop of PPO, return the batch statistics and the loss.
         """
         # for train
-        if batch_size:
-            indices = torch.randperm(batch_size).tolist()
+        if microbatch_size:
+            indices = torch.randperm(microbatch_size).tolist()
             shuffled_global_batch = {k: v[indices] if isinstance(v, torch.Tensor) else [v[i] for i in indices] for k, v in global_batch_dict.items()}
         # for eval
         else:
@@ -1338,9 +1331,9 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
             )
             
         # Split into chosen and rejected based on batch size
-        batch_size = batch['chosen_combined_input_ids'].shape[0]
-        chosen_logits = all_outputs.logits[:batch_size]
-        rejected_logits = all_outputs.logits[batch_size:]
+        microbatch_size = batch['chosen_combined_input_ids'].shape[0]
+        chosen_logits = all_outputs.logits[:microbatch_size]
+        rejected_logits = all_outputs.logits[microbatch_size:]
         
         return chosen_logits, rejected_logits
 
@@ -1355,8 +1348,8 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         where score_X is the model's predicted score for item X.
         
         Args:
-            policy_chosen_logits: Logits from model for chosen examples (batch_size, 2)
-            policy_rejected_logits: Logits from model for rejected examples (batch_size, 2)
+            policy_chosen_logits: Logits from model for chosen examples (microbatch_size, 2)
+            policy_rejected_logits: Logits from model for rejected examples (microbatch_size, 2)
             
         Returns:
             losses: The computed losses

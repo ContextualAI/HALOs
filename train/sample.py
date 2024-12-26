@@ -92,12 +92,11 @@ def main(args):
                 max_prompt_length=args.max_prompt_length,
                 n_epochs=1,
                 seed=args.seed,
-                batch_size=args.batch_size
+                microbatch_size=args.batch_size
             )
 
             # Process the dataset in batches
             for batch_idx, batch in enumerate(dataloader):
-                print(f"Generating responses for batch {batch_idx + 1} ...")
                 # prompt_text has already had the chat template applied
                 responses = llm.generate(batch['prompt_text'], sampling_params)
 

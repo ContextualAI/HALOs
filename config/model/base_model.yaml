@@ -38,12 +38,14 @@ activation_checkpointing: true
 
 # the per-step batch size (across all machines); for FSDP, divide by number of devices to get microbatch size
 batch_size: 8
+microbatch_size: null
 
 # number of steps to accumulate over for each batch; effective batch size should be 32 for best results
 gradient_accumulation_steps: 4
 
 # the batch size during evaluation and sampling, if enabled
 eval_batch_size: 8
+eval_microbatch_size: null
 
 # use flash-attention-2 if available
 attn_implementation: eager

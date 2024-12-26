@@ -61,6 +61,17 @@ def main(config: DictConfig):
     if accelerator.state.fsdp_plugin is not None:
         accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
+    # Calculate microbatch sizes
+    if config.model.batch_size % accelerator.num_processes == 0:
+        config.model.microbatch_size = config.model.batch_size / accelerator.num_processes
+    else:
+        raise ValueError(f"{config.model.batch_size} needs to be divisible by the number of processes")
+
+    if config.model.eval_batch_size % accelerator.num_processes == 0:
+        config.model.eval_microbatch_size = config.model.eval_batch_size / accelerator.num_processes
+    else:
+        raise ValueError(f"{config.model.eval_batch_size} needs to be divisible by the number of processes")
+
     if config.eval_every % config.model.batch_size != 0:
         accelerator.print('WARNING: eval_every must be divisible by batch_size')
         accelerator.print('Setting eval_every to', config.eval_every - config.eval_every % config.model.batch_size)
@@ -114,6 +125,7 @@ def main(config: DictConfig):
     accelerator.print(f'Loading data')
     data_loader_class = getattr(dataloader, config.loss.dataloader)
     data_iterator_kwargs = dict(
+        num_processes=accelerator.num_processes,
         max_length=config.model.max_length,
         max_prompt_length=config.model.max_prompt_length,
         seed=config.seed,
@@ -125,7 +137,7 @@ def main(config: DictConfig):
         config.datasets, 
         tokenizer,
         split='train',
-        batch_size=config.model.batch_size,
+        microbatch_size=config.model.microbatch_size,
         n_epochs=config.n_epochs,
         n_examples=config.n_examples,
         **data_iterator_kwargs
@@ -134,7 +146,7 @@ def main(config: DictConfig):
         config.datasets, 
         tokenizer,
         split='test',
-        batch_size=config.model.eval_batch_size,
+        microbatch_size=config.model.eval_microbatch_size,
         n_examples=config.n_eval_examples, 
         n_epochs=(1 if config.n_eval_examples is None else None),
         **data_iterator_kwargs

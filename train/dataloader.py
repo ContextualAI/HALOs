@@ -538,8 +538,9 @@ class DataLoader:
     def __init__(self, 
                  dataset_names: List[str],
                  tokenizer,
+                 num_processes: int = 1,
                  split: str = 'train',
-                 batch_size: int = 1,
+                 microbatch_size: int = 1,
                  max_length: int = 512,
                  max_prompt_length: int = 128,
                  max_prompt_count: int = None,
@@ -552,9 +553,10 @@ class DataLoader:
         torch.manual_seed(seed)
         self.seed = seed
         self.tokenizer = tokenizer
+        self.num_processes = num_processes
         self.control_tokens = control_tokens
         self.split = split
-        self.batch_size = batch_size
+        self.microbatch_size = microbatch_size
         self.max_length = max_length
         self.max_prompt_length = max_prompt_length
         self.max_prompt_count = max_prompt_count
@@ -765,8 +767,8 @@ class SFTDataLoader(DataLoader):
                 batch_element['original_prompt'] = example.original_prompt
                 batch.append(batch_element)
 
-                if len(batch) == self.batch_size:
-                    example_idx += len(batch)
+                if len(batch) == self.microbatch_size:
+                    example_idx += len(batch) * self.num_processes
                     yield self.collate(batch)
                     batch = []
 
@@ -864,8 +866,8 @@ class ConditionalSFTDataLoader(DataLoader):
                 batch_element['status'] = status
                 batch.append(batch_element)
 
-                if len(batch) >= self.batch_size:
-                    example_idx += len(batch)
+                if len(batch) >= self.microbatch_size:
+                    example_idx += len(batch) * self.num_processes
                     yield self.collate(batch)
                     batch = []
 
@@ -901,7 +903,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
-        if self.batch_size == 1:
+        if self.microbatch_size * self.num_processes <= 1:
             raise ValueError("can't use batch size of 1 with UnpairedPreferenceDataLoader")
         
     def get_flat_data(self, prompts):
@@ -974,11 +976,11 @@ class UnpairedPreferenceDataLoader(DataLoader):
                 batch_element['generation'] = generation
                 example_queue.append(batch_element)
                 
-                if len(example_queue) >= self.batch_size:
-                    while len(batch) < self.batch_size:
+                if len(example_queue) >= self.microbatch_size:
+                    while len(batch) < self.microbatch_size:
                         batch.append(example_queue.pop(0))
                     
-                if len(batch) >= self.batch_size:
+                if len(batch) >= self.microbatch_size:
                     # for estimating the KL term, match up x and y' that are not corresponding input-output pairs in the data
                     # for x_i, get a mismatched y' by just picking the subsequent y_{i+1} in the batch (desirable/undesirable status does not matter)
                     # the respective input IDs, attention mask, and so on will be prefixed by the term KL
@@ -991,7 +993,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
                             prefix='KL'
                         ))
 
-                    example_idx += len(batch)
+                    example_idx += len(batch) * self.num_processes
                     yield self.collate(batch)
                     batch = []
 
@@ -1107,8 +1109,8 @@ class PairedPreferenceDataLoader(DataLoader):
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], example.truncation_mode, prefix='rejected'))
                 batch.append(batch_element)
 
-                if len(batch) >= self.batch_size:
-                    example_idx += len(batch)
+                if len(batch) >= self.microbatch_size:
+                    example_idx += len(batch) * self.num_processes
                     yield self.collate(batch)
                     batch = []
 

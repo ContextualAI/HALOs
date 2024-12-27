@@ -107,11 +107,9 @@ class BasicTrainer(object):
 
     def prepare_accelerator(self):
         """Prepare the Accelerator."""
-        self.policy, self.reference_model, self.train_iterator, self.eval_iterator, self.optimizer, self.scheduler = self.accelerator.prepare(
+        self.policy, self.reference_model, self.optimizer, self.scheduler = self.accelerator.prepare(
             self.policy,
             self.reference_model,
-            self.train_iterator, 
-            self.eval_iterator, 
             self.optimizer, 
             self.scheduler
         )
@@ -209,10 +207,7 @@ class BasicTrainer(object):
 
         all_eval_metrics = defaultdict(list)
     
-        # Wrap the eval_iterator with accelerator.prepare
-        eval_dataloader = self.accelerator.prepare(self.eval_iterator)
-
-        for eval_batch in (tqdm(eval_dataloader, desc='Computing eval metrics') if self.accelerator.is_main_process else eval_dataloader):
+        for eval_batch in (tqdm(self.eval_iterator, desc='Computing eval metrics') if self.accelerator.is_main_process else self.eval_iterator):
             eval_batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in eval_batch.items()}
             with torch.no_grad():
                 _, eval_metrics = self.get_batch_metrics(eval_batch, mode='eval')
@@ -877,12 +872,10 @@ class PPOTrainer(BasicTrainer):
             
     def prepare_accelerator(self):
         """Prepare the Accelerator."""
-        self.policy.pretrained_model, self.policy.v_head, self.reference_model, self.train_iterator, self.eval_iterator, self.optimizer, self.scheduler = self.accelerator.prepare(
+        self.policy.pretrained_model, self.policy.v_head, self.reference_model, self.optimizer, self.scheduler = self.accelerator.prepare(
             self.policy.pretrained_model,
             self.policy.v_head,
             self.reference_model,
-            self.train_iterator, 
-            self.eval_iterator, 
             self.optimizer, 
             self.scheduler
         )
@@ -1096,10 +1089,7 @@ class PPOTrainer(BasicTrainer):
         self.accelerator.print(f'Running evaluation after {self.example_counter} train examples')
         self.policy.eval()
 
-        # Wrap the eval_iterator with accelerator.prepare
-        eval_dataloader = self.accelerator.prepare(self.eval_iterator)
-
-        for eval_batch in (tqdm(eval_dataloader, desc='Computing eval metrics') if self.accelerator.is_main_process else eval_dataloader):
+        for eval_batch in (tqdm(self.eval_iterator, desc='Computing eval metrics') if self.accelerator.is_main_process else self.eval_iterator):
             eval_batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in eval_batch.items()}
             global_batch_dict = self.get_global_batch_dict(eval_batch)
 

@@ -40,8 +40,6 @@ def process_batch(batch: Dict,
         # Use the positive class logit as the reward score
         reward_scores = outputs.logits[:, 1]
     
-    all_reward_scores = accelerator.gather(reward_scores)
-    
     # Create list of dicts with all necessary information
     processed_samples = []
     for i in range(len(batch['prompt'])):
@@ -50,11 +48,19 @@ def process_batch(batch: Dict,
             'prompt': batch['prompt'][i],
             'instruction': batch['original_prompt'][i] if 'original_prompt' in batch else batch['prompt'][i][0]['content'],
             'output': batch['target'][i], 
-            'reward': all_reward_scores[i].item()
+            'reward': reward_scores[i].item()
         }
         processed_samples.append(sample)
     
-    return processed_samples
+    # Gather using all_gather_object
+    gathered_samples = [None] * accelerator.num_processes
+    torch.distributed.all_gather_object(gathered_samples, processed_samples)
+    
+    # Only return flattened list on main process
+    if accelerator.is_main_process:
+        return [item for sublist in gathered_samples for item in sublist]
+    
+    return []
 
 def convert_batch_to_binary_feedback(samples: List[Dict], threshold: float=0.5) -> List[Dict]:
     """
@@ -149,8 +155,10 @@ def main(args):
     dataloader = SFTDataLoader(
         dataset_names=[args.samples_path],
         tokenizer=tokenizer,
+        process_index=accelerator.process_index,
+        num_processes=accelerator.num_processes,
         split='train',  # We'll handle train/test split later
-        batch_size=args.batch_size,
+        microbatch_size=(args.batch_size // accelerator.num_processes),
         max_length=args.max_length,
         max_prompt_length=args.max_prompt_length,
         n_epochs=1,
@@ -160,20 +168,18 @@ def main(args):
     # Process all samples first to get rewards
     all_processed_samples = []
     for batch in tqdm(dataloader, disable=not accelerator.is_main_process):
-        processed_batch = process_batch(
-            batch,
-            reward_model,
-            accelerator
-        )
-        all_processed_samples.extend(processed_batch)
-    
-    # Split into train and test based on prompt_ids
-    prompt_keys = list(set(sample['prompt_key'] for sample in all_processed_samples))
-    random.Random(args.seed).shuffle(prompt_keys)
-    test_prompt_keys = set(prompt_keys[:int(args.fraction_test * len(prompt_keys))])
-    
+        processed_batch = process_batch(batch, reward_model, accelerator)
+
+        if accelerator.is_main_process:
+            all_processed_samples.extend(processed_batch)
+
     # Set up output writer
     if accelerator.is_main_process:
+        # Split into train and test based on prompt_ids
+        prompt_keys = list(set(sample['prompt_key'] for sample in all_processed_samples))
+        random.Random(args.seed).shuffle(prompt_keys)
+        test_prompt_keys = set(prompt_keys[:int(args.fraction_test * len(prompt_keys))])
+
         print(f"Writing feedback to {args.output_path}")
         output_file = open(args.output_path, 'w')
         writer = StreamingJSONWriter(output_file)
@@ -207,7 +213,7 @@ if __name__ == "__main__":
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing")
     parser.add_argument("--max_length", type=int, default=1024, 
                         help="Maximum sequence length for reward model input")
-    parser.add_argument("--max_prompt_length", type=int, default=800, 
+    parser.add_argument("--max_prompt_length", type=int, default=512, 
                         help="Maximum prompt length for reward model input")
     parser.add_argument("--feedback_type", type=str, choices=['binary', 'pairwise', None], default=None,
                         help="Type of feedback to generate (either binary, pairwise, or just annotate with rewards)")

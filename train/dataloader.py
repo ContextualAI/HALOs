@@ -538,6 +538,7 @@ class DataLoader:
     def __init__(self, 
                  dataset_names: List[str],
                  tokenizer,
+                 process_index: int = 0,
                  num_processes: int = 1,
                  split: str = 'train',
                  microbatch_size: int = 1,
@@ -553,6 +554,7 @@ class DataLoader:
         torch.manual_seed(seed)
         self.seed = seed
         self.tokenizer = tokenizer
+        self.process_index = process_index
         self.num_processes = num_processes
         self.control_tokens = control_tokens
         self.split = split
@@ -593,13 +595,12 @@ class DataLoader:
 
     def collate(self, batch: Dict[str, List]) -> Dict:
         """
-        Takes a list of examples (dicts, where values are lists of ints [tokens] or strings [the original texts]) and returns a batch of examples,
-        PyTorch tensors padded to the maximum length. Strings are passed through.
+        Takes a list of examples and returns a batch of examples with consistent padding across all processes.
+        Uses a fixed maximum length for padding to ensure consistency across batches and processes.
         """
         if self.tokenizer.pad_token_id is None:
             raise Exception("tokenizer's pad_token_id is not specified")
         
-        # first, pad everything to the same length
         padded_batch = {}
         for k in batch[0].keys():
             if k.endswith('_input_ids') or k.endswith('_attention_mask') or k.endswith('_labels'):
@@ -618,7 +619,20 @@ class DataLoader:
                 else:
                     raise ValueError(f"Unexpected key in batch '{k}'")
 
-                padded_batch[k] = pad_sequence(to_pad, batch_first=True, padding_value=padding_value)
+                # Always pad to max_length for consistency across processes
+                max_len = self.max_prompt_length if 'prompt' in k else self.max_length
+
+                padded_sequences = []
+                for seq in to_pad:
+                    if len(seq) > max_len:
+                        padded_seq = seq[:max_len]
+                    else:
+                        padding_size = max_len - len(seq)
+                        padding = torch.full((padding_size,), padding_value, dtype=seq.dtype)
+                        padded_seq = torch.cat([seq, padding])
+                    padded_sequences.append(padded_seq)
+
+                padded_batch[k] = torch.stack(padded_sequences)
                 if 'prompt' in k:
                     padded_batch[k] = padded_batch[k].flip(dims=[1])
             else:
@@ -726,10 +740,20 @@ class SFTDataLoader(DataLoader):
     """
     def __iter__(self):
         flat_data = []
+        
         prompts = list(self.full_data.keys())
-        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        random.Random(self.seed).shuffle(prompts)
 
-        for prompt in prompts:
+        if self.num_processes == 1: # for eval usually
+            usable_size = len(prompts)
+        else: # to avoid hanging with uneven batches
+            global_batch_size = int(self.num_processes * self.microbatch_size)
+            usable_size = len(prompts) // global_batch_size * global_batch_size
+        
+        usable_size = len(prompts)
+        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
+        
+        for prompt in process_prompts:
             flat_data.append(self.full_data[prompt])
 
         epoch_idx = 0
@@ -788,7 +812,7 @@ class SFTDataLoader(DataLoader):
 
     def get_num_training_steps(self):
         """Get the number of training steps."""
-        return len(self.full_data)
+        return len(self.full_data) // self.num_processes
 
 
 class ConditionalSFTDataLoader(DataLoader):
@@ -829,9 +853,18 @@ class ConditionalSFTDataLoader(DataLoader):
         return flat_data
     
     def __iter__(self):
-        prompts = list(self.full_data.keys()) 
-        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
-        flat_data = self.get_flat_data(prompts)
+        prompts = list(self.full_data.keys())
+        random.Random(self.seed).shuffle(prompts)
+
+        if self.num_processes == 1: # for eval usually
+            usable_size = len(prompts)
+        else: # to avoid hanging with uneven batches
+            global_batch_size = int(self.num_processes * self.microbatch_size)
+            usable_size = len(prompts) // global_batch_size * global_batch_size
+
+        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
+
+        flat_data = self.get_flat_data(process_prompts)
       
         epoch_idx = 0
         example_idx = 0
@@ -889,7 +922,7 @@ class ConditionalSFTDataLoader(DataLoader):
         max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
         num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
         num_training_steps = num_pairs * 2
-        return num_training_steps
+        return num_training_steps // self.num_processes
 
 
 class UnpairedPreferenceDataLoader(DataLoader):
@@ -954,9 +987,18 @@ class UnpairedPreferenceDataLoader(DataLoader):
         return flat_data
 
     def __iter__(self):
-        prompts = sorted(list(self.full_data.keys()))
-        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
-        flat_data = self.get_flat_data(prompts)
+        prompts = list(self.full_data.keys())
+        random.Random(self.seed).shuffle(prompts)
+
+        if self.num_processes == 1: # for eval usually
+            usable_size = len(prompts)
+        else: # to avoid hanging with uneven batches
+            global_batch_size = int(self.num_processes * self.microbatch_size)
+            usable_size = len(prompts) // global_batch_size * global_batch_size
+
+        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
+
+        flat_data = self.get_flat_data(process_prompts)
 
         epoch_idx = 0
         example_idx = 0
@@ -1015,7 +1057,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
         max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
         num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
         num_training_steps = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
-        return num_training_steps
+        return num_training_steps // self.num_processes
 
 
 class ScoreDataLoader(UnpairedPreferenceDataLoader):
@@ -1081,11 +1123,20 @@ class PairedPreferenceDataLoader(DataLoader):
     Dataloader for losses that do require pairwise preferences (e.g., DPO).
     """
     def __iter__(self):
-        flat_data = []
         prompts = list(self.full_data.keys())
-        random.Random(self.seed).shuffle(prompts) # otherwise, will be frontloaded with prompts in same domain
+        random.Random(self.seed).shuffle(prompts)
 
-        for prompt in prompts:
+        if self.num_processes == 1: # for eval usually
+            usable_size = len(prompts)
+        else: # to avoid hanging with uneven batches
+            global_batch_size = int(self.num_processes * self.microbatch_size)
+            usable_size = len(prompts) // global_batch_size * global_batch_size
+
+        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
+
+        flat_data = []
+
+        for prompt in process_prompts:
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
@@ -1130,4 +1181,5 @@ class PairedPreferenceDataLoader(DataLoader):
 
     def get_num_training_steps(self):
         max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
-        return int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+        all_data = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+        return all_data // self.num_processes

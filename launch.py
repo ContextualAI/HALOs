@@ -125,6 +125,7 @@ def main(config: DictConfig):
     accelerator.print(f'Loading data')
     data_loader_class = getattr(dataloader, config.loss.dataloader)
     data_iterator_kwargs = dict(
+        process_index=accelerator.process_index,
         num_processes=accelerator.num_processes,
         max_length=config.model.max_length,
         max_prompt_length=config.model.max_prompt_length,

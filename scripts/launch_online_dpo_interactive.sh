@@ -62,7 +62,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} \
-    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 \
+    ++model.batch_size=16 ++model.gradient_accumulation_steps=2 ++model.eval_batch_size=16 \
     ++n_examples=512
 
 accelerate launch \
@@ -75,7 +75,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} \
-    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 \
+    ++model.batch_size=16 ++model.gradient_accumulation_steps=2 ++model.eval_batch_size=16 \
     ++model.load_from=\$SFT_CKPT ++n_examples=512
 
 python -m train.sample \$R1_CKPT --output_file R1_samples.json --gpu_count 4 --datasets alpacaeval --num_samples_per_prompt 2 --mode train 
@@ -85,7 +85,7 @@ accelerate launch \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    label.py \$REWARD_CKPT R1_samples.json R2_data.json --feedback_type pairwise
+    label.py \$REWARD_CKPT R1_samples.json R2_data.json --feedback_type pairwise --batch_size 16
 
 accelerate launch \
     --config_file accelerate_config/fsdp_4gpu.yaml \
@@ -97,7 +97,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} \
-    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 \
+    ++model.batch_size=16 ++model.gradient_accumulation_steps=2 ++model.eval_batch_size=16 \
     ++model.load_from=\$R1_CKPT ++n_examples=512
 
 python -m train.sample \$R2_CKPT --output_file R2_samples.json --gpu_count 4 --datasets alpacaeval --num_samples_per_prompt 2 --mode train 
@@ -107,7 +107,7 @@ accelerate launch \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    label.py \$REWARD_CKPT R2_samples.json R3_data.json --feedback_type pairwise
+    label.py \$REWARD_CKPT R2_samples.json R3_data.json --feedback_type pairwise --batch_size 16
 
 lm_eval --model hf \
   --model_args pretrained=\$R2_CKPT,tokenizer=\$R2_CKPT,parallelize=True \

@@ -96,7 +96,7 @@ def main(args):
             )
 
             # Process the dataset in batches
-            for batch_idx, batch in enumerate(dataloader):
+            for batch in dataloader:
                 # prompt_text has already had the chat template applied
                 responses = llm.generate(batch['prompt_text'], sampling_params)
 

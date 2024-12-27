@@ -740,21 +740,18 @@ class SFTDataLoader(DataLoader):
     """
     def __iter__(self):
         flat_data = []
-        
         prompts = list(self.full_data.keys())
         random.Random(self.seed).shuffle(prompts)
+        for prompt in prompts:
+            flat_data.append(self.full_data[prompt])
 
         if self.num_processes == 1: # for eval usually
-            usable_size = len(prompts)
+            usable_size = len(flat_data)
         else: # to avoid hanging with uneven batches
             global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(prompts) // global_batch_size * global_batch_size
+            usable_size = len(flat_data) // global_batch_size * global_batch_size
         
-        usable_size = len(prompts)
-        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
-        
-        for prompt in process_prompts:
-            flat_data.append(self.full_data[prompt])
+        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
 
         epoch_idx = 0
         example_idx = 0
@@ -801,8 +798,8 @@ class SFTDataLoader(DataLoader):
                         done = True
                         break
 
-            if batch != []:
-                yield self.collate(batch) # flush
+            if self.num_processes == 1 and batch != []: # flush for eval, sampling
+                yield self.collate(batch) 
                 batch = []
 
             epoch_idx += 1
@@ -855,16 +852,15 @@ class ConditionalSFTDataLoader(DataLoader):
     def __iter__(self):
         prompts = list(self.full_data.keys())
         random.Random(self.seed).shuffle(prompts)
+        flat_data = self.get_flat_data(prompts)
 
         if self.num_processes == 1: # for eval usually
-            usable_size = len(prompts)
+            usable_size = len(flat_data)
         else: # to avoid hanging with uneven batches
             global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(prompts) // global_batch_size * global_batch_size
-
-        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
-
-        flat_data = self.get_flat_data(process_prompts)
+            usable_size = len(flat_data) // global_batch_size * global_batch_size
+        
+        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
       
         epoch_idx = 0
         example_idx = 0
@@ -909,8 +905,8 @@ class ConditionalSFTDataLoader(DataLoader):
                         done = True
                         break
 
-            if batch != []:
-                yield self.collate(batch) # flush
+            if self.num_processes == 1 and batch != []: # flush for eval, sampling
+                yield self.collate(batch)
                 batch = []
 
             epoch_idx += 1
@@ -989,16 +985,15 @@ class UnpairedPreferenceDataLoader(DataLoader):
     def __iter__(self):
         prompts = list(self.full_data.keys())
         random.Random(self.seed).shuffle(prompts)
+        flat_data = self.get_flat_data(prompts)
 
         if self.num_processes == 1: # for eval usually
-            usable_size = len(prompts)
+            usable_size = len(flat_data)
         else: # to avoid hanging with uneven batches
             global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(prompts) // global_batch_size * global_batch_size
-
-        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
-
-        flat_data = self.get_flat_data(process_prompts)
+            usable_size = len(flat_data) // global_batch_size * global_batch_size
+        
+        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
 
         epoch_idx = 0
         example_idx = 0
@@ -1044,8 +1039,8 @@ class UnpairedPreferenceDataLoader(DataLoader):
                         done = True
                         break
 
-            if batch != []:
-                yield self.collate(batch) # flush
+            if self.num_processes == 1 and batch != []: # flush for eval, sampling
+                yield self.collate(batch)
                 batch = []
 
             epoch_idx += 1
@@ -1125,18 +1120,9 @@ class PairedPreferenceDataLoader(DataLoader):
     def __iter__(self):
         prompts = list(self.full_data.keys())
         random.Random(self.seed).shuffle(prompts)
-
-        if self.num_processes == 1: # for eval usually
-            usable_size = len(prompts)
-        else: # to avoid hanging with uneven batches
-            global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(prompts) // global_batch_size * global_batch_size
-
-        process_prompts = [p for i, p in enumerate(prompts[:usable_size]) if i % self.num_processes == self.process_index]
-
         flat_data = []
 
-        for prompt in process_prompts:
+        for prompt in prompts:
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
@@ -1144,6 +1130,14 @@ class PairedPreferenceDataLoader(DataLoader):
 
             for pair in example.pairs:
                 flat_data.append((example, pair))
+
+        if self.num_processes == 1: # for eval, sampling
+            usable_size = len(flat_data)
+        else: # to avoid hanging with uneven batches
+            global_batch_size = int(self.num_processes * self.microbatch_size)
+            usable_size = len(flat_data) // global_batch_size * global_batch_size
+
+        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
          
         epoch_idx = 0
         example_idx = 0
@@ -1170,8 +1164,8 @@ class PairedPreferenceDataLoader(DataLoader):
                         done = True
                         break
 
-            if batch != []:
-                yield self.collate(batch) # flush
+            if self.num_processes == 1 and batch != []: # flush for eval, sampling
+                yield self.collate(batch)
                 batch = []
 
             epoch_idx += 1

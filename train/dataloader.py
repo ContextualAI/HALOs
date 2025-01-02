@@ -552,7 +552,7 @@ class DataLoader:
                  **kwargs):
         
         torch.manual_seed(seed)
-        self.seed = seed
+        self.rng = random.Random(seed)
         self.tokenizer = tokenizer
         self.process_index = process_index
         self.num_processes = num_processes
@@ -741,7 +741,7 @@ class SFTDataLoader(DataLoader):
     def __iter__(self):
         flat_data = []
         prompts = list(self.full_data.keys())
-        random.Random(self.seed).shuffle(prompts)
+        
         for prompt in prompts:
             flat_data.append(self.full_data[prompt])
 
@@ -751,6 +751,7 @@ class SFTDataLoader(DataLoader):
             global_batch_size = int(self.num_processes * self.microbatch_size)
             usable_size = len(flat_data) // global_batch_size * global_batch_size
         
+        self.rng.shuffle(flat_data)
         flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
 
         epoch_idx = 0
@@ -759,7 +760,7 @@ class SFTDataLoader(DataLoader):
         
         while True:
             if done: break
-            random.Random(self.seed + epoch_idx).shuffle(flat_data)
+            self.rng.shuffle(flat_data)
 
             batch = []
 
@@ -841,7 +842,7 @@ class ConditionalSFTDataLoader(DataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = self.rng.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for i,j in example.pairs:
                 flat_data.append((example, example.generations[i], 'chosen'))
@@ -851,7 +852,6 @@ class ConditionalSFTDataLoader(DataLoader):
     
     def __iter__(self):
         prompts = list(self.full_data.keys())
-        random.Random(self.seed).shuffle(prompts)
         flat_data = self.get_flat_data(prompts)
 
         if self.num_processes == 1: # for eval usually
@@ -860,6 +860,7 @@ class ConditionalSFTDataLoader(DataLoader):
             global_batch_size = int(self.num_processes * self.microbatch_size)
             usable_size = len(flat_data) // global_batch_size * global_batch_size
         
+        self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
         flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
       
         epoch_idx = 0
@@ -868,7 +869,7 @@ class ConditionalSFTDataLoader(DataLoader):
         
         while True:
             if done: break
-            random.Random(self.seed + epoch_idx).shuffle(flat_data)
+            self.rng.shuffle(flat_data)
 
             batch = []
 
@@ -967,7 +968,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
             # getting unpaired data out of pairs
             elif example.pairs != []:
                 if self.max_prompt_count:
-                    example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                    example.pairs = self.rng.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
                 for i,j in example.pairs:
                     if seen_desirable < allowed_desirable:
@@ -984,7 +985,6 @@ class UnpairedPreferenceDataLoader(DataLoader):
 
     def __iter__(self):
         prompts = list(self.full_data.keys())
-        random.Random(self.seed).shuffle(prompts)
         flat_data = self.get_flat_data(prompts)
 
         if self.num_processes == 1: # for eval usually
@@ -993,6 +993,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
             global_batch_size = int(self.num_processes * self.microbatch_size)
             usable_size = len(flat_data) // global_batch_size * global_batch_size
         
+        self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
         flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
 
         epoch_idx = 0
@@ -1001,7 +1002,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
 
         while True:
             if done: break
-            random.Random(self.seed + epoch_idx).shuffle(flat_data)   # so generations in the same preference are not in the same batch
+            self.rng.shuffle(flat_data)   # so generations in the same preference are not in the same batch
             batch = []
             example_queue = []
 
@@ -1068,7 +1069,7 @@ class ScoreDataLoader(UnpairedPreferenceDataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = self.rng.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             # for oasst, lower scores are better, so rank 0 is the best response and rank n is the worst
             if prev_status == 'rejected':
@@ -1099,7 +1100,7 @@ class HalfPrefDataLoader(UnpairedPreferenceDataLoader):
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = self.rng.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for i,j in example.pairs:
                 if prev_status == 'rejected':
@@ -1119,14 +1120,13 @@ class PairedPreferenceDataLoader(DataLoader):
     """
     def __iter__(self):
         prompts = list(self.full_data.keys())
-        random.Random(self.seed).shuffle(prompts)
         flat_data = []
 
         for prompt in prompts:
             example = self.full_data[prompt]
 
             if self.max_prompt_count:
-                example.pairs = random.Random(self.seed).sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
+                example.pairs = self.rng.sample(example.pairs, min(self.max_prompt_count, len(example.pairs)))
 
             for pair in example.pairs:
                 flat_data.append((example, pair))
@@ -1137,6 +1137,7 @@ class PairedPreferenceDataLoader(DataLoader):
             global_batch_size = int(self.num_processes * self.microbatch_size)
             usable_size = len(flat_data) // global_batch_size * global_batch_size
 
+        self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
         flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
          
         epoch_idx = 0
@@ -1145,7 +1146,7 @@ class PairedPreferenceDataLoader(DataLoader):
 
         while True:
             if done: break
-            random.Random(self.seed + epoch_idx).shuffle(flat_data)
+            self.rng.shuffle(flat_data)
             batch = []
 
             for example, (i, j) in flat_data:

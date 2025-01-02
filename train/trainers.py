@@ -717,20 +717,49 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         takes the mean reward clamped to be non-negative; the 'z2' estimate takes the mean over rewards when y|x
         is more probable under the policy than the reference.
         """
-        KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
-        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
+        if self.config.loss.humanline:
+            KL_rewards_token = (policy_KL_logps - reference_KL_logps).detach()
+            KL_rewards_mask = (KL_rewards_token.exp() < self.config.loss.M * torch.rand_like(KL_rewards_token))
+            KL_rewards = self.accelerator.gather(torch.where(KL_rewards_mask, 0, KL_rewards_token).sum(-1))
+            # ignore full sequences that have no unmasked tokens
+            KL_mask = (KL_rewards.abs() != 0).float() 
+            KL = (KL_rewards * KL_mask).sum() / KL_mask.sum().clamp(min=1)
+            KL = KL.clamp(min=0)
+        else:
+            KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)).detach()
+            KL = self.accelerator.gather(KL_rewards).mean().clamp(min=0)
 
         if policy_chosen_logps.shape[0] != 0:
-            chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_losses = self.config.loss.desirable_weight * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
+            if self.config.loss.humanline:
+                chosen_rewards_token = (policy_chosen_logps - reference_chosen_logps)
+                chosen_mask = (chosen_rewards_token.exp() < self.config.loss.M * torch.rand_like(chosen_rewards_token))
+                chosen_rewards = torch.where(chosen_mask, 0, chosen_rewards_token).sum(-1)
+                ratio = chosen_rewards.shape[0] / (chosen_rewards.abs() != 0).float().sum().clamp(min=1)
+                chosen_KL = KL
+            else:
+                chosen_rewards = (policy_chosen_logps - reference_chosen_logps).sum(-1)
+                ratio = 1
+                chosen_KL = KL
+
+            chosen_losses = ratio * self.config.loss.desirable_weight * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - chosen_KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
             chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_losses = self.config.loss.undesirable_weight * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
+            if self.config.loss.humanline:
+                rejected_rewards_token = (policy_rejected_logps - reference_rejected_logps)
+                rejected_mask = (rejected_rewards_token.exp() < self.config.loss.M * torch.rand_like(rejected_rewards_token))
+                rejected_rewards = torch.where(rejected_mask, 0, rejected_rewards_token).sum(-1)
+                ratio = rejected_rewards.shape[0] / (rejected_rewards.abs() != 0).float().sum().clamp(min=1)
+                rejected_KL = 0
+            else:
+                rejected_rewards = (policy_rejected_logps - reference_rejected_logps).sum(-1)
+                ratio = 1
+                rejected_KL = KL
+
+            rejected_losses = ratio * self.config.loss.undesirable_weight * (1 - F.sigmoid(self.config.loss.beta * (rejected_KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)

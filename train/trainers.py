@@ -643,8 +643,29 @@ class CDPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the CDPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-        rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+        
+        # applying rejection sampling on CDPO
+        if policy_chosen_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                chosen_rewards_token = (policy_chosen_logps - reference_chosen_logps)
+                chosen_mask = chosen_rewards_token.exp() < self.config.loss.M * torch.rand_like(chosen_rewards_token)
+                chosen_rewards = self.config.loss.beta * torch.where(chosen_mask, 0, chosen_rewards_token).sum(-1)
+            else:
+                chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
+        else:
+            chosen_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
+            
+        if policy_rejected_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                rejected_rewards_token = (policy_rejected_logps - reference_rejected_logps)
+                rejected_mask = rejected_rewards_token.exp() < self.config.loss.M * torch.rand_like(rejected_rewards_token)
+                rejected_rewards = self.config.loss.beta * torch.where(rejected_mask, 0, rejected_rewards_token).sum(-1)
+            else:
+                rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+        else:
+            rejected_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
         
         forward_losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
         reverse_losses = -F.logsigmoid(rejected_rewards - chosen_rewards)
@@ -670,15 +691,31 @@ class IPOTrainer(PairedPreferenceTrainer):
 
         rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
         rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
-
-        # must average over the probabilities
-        policy_chosen_logps = policy_chosen_logps.sum(-1) / chosen_lengths
-        policy_rejected_logps = policy_rejected_logps.sum(-1) / rejected_lengths
-        reference_chosen_logps = reference_chosen_logps.sum(-1) / chosen_lengths
-        reference_rejected_logps = reference_rejected_logps.sum(-1) / rejected_lengths
-
-        chosen_rewards = policy_chosen_logps - reference_chosen_logps
-        rejected_rewards = policy_rejected_logps - reference_rejected_logps
+        
+        # applying rejection sampling on IPO
+        if policy_chosen_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                chosen_rewards_token = (policy_chosen_logps - reference_chosen_logps)
+                chosen_mask = chosen_rewards_token.exp() < self.config.loss.M * torch.rand_like(chosen_rewards_token)
+                # must average over the probabilities
+                chosen_rewards = torch.where(chosen_mask, 0, chosen_rewards_token).sum(-1) / chosen_lengths
+            else:
+                chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1)) / chosen_lengths
+        else:
+            chosen_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
+            
+        if policy_rejected_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                rejected_rewards_token = (policy_rejected_logps - reference_rejected_logps)
+                rejected_mask = rejected_rewards_token.exp() < self.config.loss.M * torch.rand_like(rejected_rewards_token)
+                # must average over the probabilities
+                rejected_rewards = self.config.loss.beta * torch.where(rejected_mask, 0, rejected_rewards_token).sum(-1) / rejected_lengths
+            else:
+                rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1)) / rejected_lengths
+        else:
+            rejected_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
         
         losses = (chosen_rewards - rejected_rewards - (1/(2 * self.config.loss.tau))).pow(2)
 
@@ -697,11 +734,30 @@ class SimPOTrainer(PairedPreferenceTrainer):
 
         chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
         chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
-        chosen_rewards = policy_chosen_logps.sum(-1) / chosen_lengths
 
         rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
         rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
-        rejected_rewards = policy_rejected_logps.sum(-1) / rejected_lengths
+        
+        # applying rejection sampling on SimPO
+        if policy_chosen_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                chosen_mask = policy_chosen_logps.exp() < self.config.loss.M * torch.rand_like(policy_chosen_logps)
+                chosen_rewards = torch.where(chosen_mask, 0, policy_chosen_logps).sum(-1) / chosen_lengths
+            else:
+                chosen_rewards = policy_chosen_logps.sum(-1) / chosen_lengths
+        else:
+            chosen_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
+            
+        if policy_rejected_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                rejected_mask = policy_rejected_logps.exp() < self.config.loss.M * torch.rand_like(policy_rejected_logps)
+                rejected_rewards = torch.where(rejected_mask, 0, policy_rejected_logps).sum(-1) / rejected_lengths
+            else:
+                rejected_rewards = policy_rejected_logps.sum(-1) / rejected_lengths
+        else:
+            rejected_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
         
         losses = -F.logsigmoid(self.config.loss.beta * (chosen_rewards - rejected_rewards - self.config.loss.gamma_beta_ratio))
 

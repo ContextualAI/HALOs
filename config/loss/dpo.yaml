@@ -7,10 +7,16 @@ trainer: DPOTrainer
 
 dataloader: PairedPreferenceDataLoader
 
+# humanline dpo
+humanline: true
+
+# M for rejection sampling
+M: 1.0
+
 filtering: false # default (no threshold); alternatively, use one of the following: absolute, relative, sequence
 
-threshold: -0.1 # used for absolute and sequence filtering
+threshold: -1 # used for absolute and sequence filtering
+
+min_quantile: 0.05 # used for relative filterings
 
 detach: false # whether to zero-out log probabilities or detach them
-
-min_quantile: 0.1 # used for relative filtering

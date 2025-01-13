@@ -578,15 +578,39 @@ class DPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the DPO loss for a batch of policy and reference model token-level log probabilities."""
-        # applying token-level thresholds on log probabilities
-        if self.config.loss.filtering != False:
+        
+        # applying rejection sampling on DPO
+        if policy_chosen_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                chosen_rewards_token = (policy_chosen_logps - reference_chosen_logps)
+                chosen_mask = chosen_rewards_token.exp() < self.config.loss.M * torch.rand_like(chosen_rewards_token)
+                chosen_rewards = self.config.loss.beta * torch.where(chosen_mask, 0, chosen_rewards_token).sum(-1)
+            else:
+                chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
+        else:
+            chosen_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
+            
+        if policy_rejected_logps.shape[0] != 0:
+            if self.config.loss.humanline:
+                assert isinstance(self.config.loss.M, (float, int))
+                rejected_rewards_token = (policy_rejected_logps - reference_rejected_logps)
+                rejected_mask = rejected_rewards_token.exp() < self.config.loss.M * torch.rand_like(rejected_rewards_token)
+                rejected_rewards = self.config.loss.beta * torch.where(rejected_mask, 0, rejected_rewards_token).sum(-1)
+            else:
+                rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+        else:
+            rejected_rewards = torch.Tensor([0]).to(self.policy_dtype).to(self.accelerator.device)
+                        
+        # alternative: applying token-level thresholds on log probabilities
+        if self.config.loss.filtering:
             if self.config.loss.filtering == "absolute" and self.config.loss.threshold != False:
                 assert isinstance(self.config.loss.threshold, (float, int))
                 chosen_mask = policy_chosen_logps < self.config.loss.threshold
                 rejected_mask = policy_rejected_logps < self.config.loss.threshold
             elif self.config.loss.filtering == "relative" and self.config.loss.min_quantile != False:
                 assert isinstance(self.config.loss.min_quantile, (float, int))
-                threshold = torch.quantile(policy_chosen_logps, torch.tensor([self.config.loss.min_quantile]).to(policy_chosen_logps.device), dim=1).view(-1, 1)
+                threshold = torch.quantile(policy_chosen_logps, torch.tensor([self.config.loss.min_quantile]).to(self.policy_dtype).to(self.accelerator.device), dim=1).view(-1, 1)
                 chosen_mask = policy_chosen_logps < threshold
                 rejected_mask = policy_rejected_logps < threshold
             elif self.config.loss.filtering == "sequence":
@@ -594,15 +618,15 @@ class DPOTrainer(PairedPreferenceTrainer):
                 chosen_mask = policy_chosen_logps.sum(-1) < self.config.loss.threshold
                 rejected_mask = policy_rejected_logps.sum(-1) < self.config.loss.threshold
                 
-            if self.config.loss.detach == False:
-                policy_chosen_logps[chosen_mask] = 0
-                policy_rejected_logps[rejected_mask] = 0
-            else:
+            if self.config.loss.detach:
                 policy_chosen_logps[chosen_mask] = policy_chosen_logps[chosen_mask].detach()
                 policy_rejected_logps[rejected_mask] = policy_rejected_logps[rejected_mask].detach()
-                
-        chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-        rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+            else:
+                policy_chosen_logps[chosen_mask] = 0
+                policy_rejected_logps[rejected_mask] = 0
+
+            chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
+            rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
 
         losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
 

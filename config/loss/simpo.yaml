@@ -9,3 +9,9 @@ gamma_beta_ratio: 0.3
 trainer: SimPOTrainer
 
 dataloader: PairedPreferenceDataLoader
+
+# humanline
+humanline: true
+
+# M for rejection sampling
+M: 1.0

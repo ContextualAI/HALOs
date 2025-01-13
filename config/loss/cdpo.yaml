@@ -9,3 +9,9 @@ epsilon: 0.2
 trainer: CDPOTrainer
 
 dataloader: PairedPreferenceDataLoader
+
+# humanline
+humanline: true
+
+# M for rejection sampling
+M: 1.0

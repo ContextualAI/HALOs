@@ -27,6 +27,9 @@ from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, Aut
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
 from accelerate import Accelerator
+from argparse import Namespace
+import train.sample as sampling_module
+# from ..label import main as label
 import pdb
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
@@ -90,6 +93,7 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
+        self.policy_online = getattr(bool, config.model.policy_online)
 
         self.reference_model = reference_model
         self.train_iterator = train_iterator
@@ -111,7 +115,7 @@ class BasicTrainer(object):
         self.policy, self.reference_model, self.optimizer, self.scheduler = self.accelerator.prepare(
             self.policy,
             self.reference_model,
-            self.optimizer, 
+            self.optimizer,
             self.scheduler
         )
 
@@ -222,7 +226,7 @@ class BasicTrainer(object):
         """
         Run evaluation on all the examples in the test data and return the metrics from get_batch_metrics.
         This is close-ended evaluation and measures the performance of a single model on a single dataset. 
-        It does not compare two models to eacch other.
+        It does not compare two models to each other.
 
         Returns:
             A dict of form:
@@ -319,6 +323,7 @@ class BasicTrainer(object):
                 self.scheduler.step()
                 self.optimizer.zero_grad()
                 accumulated += 1
+                    
 
             step_time = time.time() - start_time
             examples_per_second = self.config.model.batch_size / step_time
@@ -1376,4 +1381,3 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
 
         return losses.sum(), metrics
-        

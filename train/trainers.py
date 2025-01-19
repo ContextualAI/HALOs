@@ -152,6 +152,37 @@ class BasicTrainer(object):
 
         return policy_output_decoded
 
+    def get_sequence_rewards(self, policy_logps, reference_logps, length_normalized=False):
+        """
+        If regular alignment, return the HALO-defined reward for the sequence (log [policy(y|x)/reference(y|x)]).
+
+        For humanline alignment, do zero-shot rejection sampling. Assume that the examples are drawn from the 
+        reference model, zero-out the tokens that don't meet the rejection sampling criterion, then sum over what 
+        remains to get the sequence-level rewards. To adjust for the human-perceived bias, multiply the reference
+        model's log-probabilities by gamma (to simulate the human bias that would've existed at offline data creation)
+        and the policy's log-probabilities by 1 / gamma (this cancels out the human-perceived bias of the "resampled"
+        text, which isn't necessary under the assumption that the policy internalizes the bias over training).
+        
+        Args:
+            policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
+            reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
+            length_normalized: divide the sequence reward by the number of non-rejected tokens
+
+        Returns:
+            The sequence-level rewards (microbatch_size, 1).
+        """
+        token_rewards = policy_logps - reference_logps
+        
+        if self.config.humanline:    
+            token_mask = (((1/self.config.humanline_gamma) * policy_logps - self.config.humanline_gamma * reference_logps).exp() < self.config.humanline_M * torch.rand_like(token_rewards))
+            normalization_factor = token_mask.float().sum(-1) if length_normalized else 1
+            sequence_rewards = torch.where(token_mask, 0, token_rewards).sum(-1) / normalization_factor
+        else:
+            normalization_factor = (policy_logps.abs() != 0).float().sum(-1) if length_normalized else 1
+            sequence_rewards = token_rewards.sum(-1) / normalization_factor
+
+        return sequence_rewards
+
     def loss(self,
              batch: Dict,
              policy_chosen_logps: torch.FloatTensor,
@@ -577,8 +608,8 @@ class DPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the DPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-        rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+        chosen_rewards = self.config.loss.beta * self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+        rejected_rewards = self.config.loss.beta * self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps)
 
         losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
 
@@ -595,8 +626,8 @@ class CDPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the CDPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-        rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+        chosen_rewards = self.config.loss.beta * self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+        rejected_rewards = self.config.loss.beta * self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps)
         
         forward_losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
         reverse_losses = -F.logsigmoid(rejected_rewards - chosen_rewards)
@@ -615,22 +646,8 @@ class IPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the IPO loss for a batch of policy and reference model token-level log probabilities."""
-        prompt_lengths = (batch['prompt_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-
-        chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
-
-        rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
-
-        # must average over the probabilities
-        policy_chosen_logps = policy_chosen_logps.sum(-1) / chosen_lengths
-        policy_rejected_logps = policy_rejected_logps.sum(-1) / rejected_lengths
-        reference_chosen_logps = reference_chosen_logps.sum(-1) / chosen_lengths
-        reference_rejected_logps = reference_rejected_logps.sum(-1) / rejected_lengths
-
-        chosen_rewards = policy_chosen_logps - reference_chosen_logps
-        rejected_rewards = policy_rejected_logps - reference_rejected_logps
+        chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps, length_normalized=True)
+        rejected_rewards = self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps, length_normalized=True)
         
         losses = (chosen_rewards - rejected_rewards - (1/(2 * self.config.loss.tau))).pow(2)
 
@@ -645,15 +662,9 @@ class SimPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the SimPO loss for a batch of policy and reference model token-level log probabilities."""
-        prompt_lengths = (batch['prompt_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-
-        chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
-        chosen_rewards = policy_chosen_logps.sum(-1) / chosen_lengths
-
-        rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
-        rejected_rewards = policy_rejected_logps.sum(-1) / rejected_lengths
+        # implicit reference model that assigns probability 1 (logp = 0) to all tokens
+        chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, torch.zeros_like(policy_chosen_logps).to(self.accelerator.device), length_normalized=True)
+        rejected_rewards = self.get_sequence_rewards(policy_rejected_logps, torch.zeros_like(policy_rejected_logps).to(self.accelerator.device), length_normalized=True)
         
         losses = -F.logsigmoid(self.config.loss.beta * (chosen_rewards - rejected_rewards - self.config.loss.gamma_beta_ratio))
 
@@ -675,15 +686,16 @@ class SLiCTrainer(PairedPreferenceTrainer):
             L(x, y) := max(0, beta - log p_policy(y_chosen|x) + log p_rejected(y|x))
         For the cross-entropy loss, just use the NLL of the chosen sequence (equivalent to SFT).
         """
-        cal_loss = torch.clamp(self.config.loss.beta - policy_chosen_logps.sum(-1) + policy_rejected_logps.sum(-1), min=0)
+        # implicit reference model that assigns probability 1 (logp = 0) to all tokens, as in SimPO
+        chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, torch.zeros_like(policy_chosen_logps).to(self.accelerator.device))
+        rejected_rewards = self.get_sequence_rewards(policy_rejected_logps, torch.zeros_like(policy_rejected_logps).to(self.accelerator.device))
+        
+        cal_loss = torch.clamp(self.config.loss.beta - chosen_rewards + rejected_rewards, min=0)
         reg_loss = -policy_chosen_logps
 
         losses = cal_loss + self.config.loss.lambda_coef * reg_loss
 
-        chosen_rewards = policy_chosen_logps.detach()
-        rejected_rewards = policy_rejected_logps.detach()
-
-        return losses, chosen_rewards, rejected_rewards
+        return losses, chosen_rewards.detach(), rejected_rewards.detach()
 
 
 class KTOTrainer(UnpairedPreferenceTrainer):
@@ -710,60 +722,52 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         The desirable losses are weighed by config.loss.desirable_weight.
         The undesirable losses are weighed by config.loss.undesirable_weight.
         This should be used to address imbalances in the ratio of desirable:undesirable examples respectively.
-
         The KL term is estimated by matching x with unrelated outputs y', then calculating the average log ratio
-        log p_policy(y'|x) - log p_reference(y'|x). Doing so avoids the requirement that there be equal numbers of 
-        desirable and undesirable examples in the microbatch. It can be estimated differently: the 'z1' estimate
-        takes the mean reward clamped to be non-negative; the 'z2' estimate takes the mean over rewards when y|x
-        is more probable under the policy than the reference.
+        log p_policy(y'|x) - log p_reference(y'|x).
+
+        If humanline alignment, do the following:
+        - for rejected examples, use a KL estimate of zero
+        - zero-shot rejection sampling (handled by get_sequence_rewards)
+        - adjust for entire chosen(rejected) sequences that have been sampled out by upweighting other chosen(rejected) examples
         """
-        if self.config.loss.humanline:
-            KL_rewards_token = (policy_KL_logps - reference_KL_logps).detach()
-            KL_rewards_mask = (KL_rewards_token.exp() < self.config.loss.M * torch.rand_like(KL_rewards_token))
-            KL_rewards = self.accelerator.gather(torch.where(KL_rewards_mask, 0, KL_rewards_token).sum(-1))
-            # ignore full sequences that have no unmasked tokens
-            KL_mask = (KL_rewards.abs() != 0).float() 
-            KL = (KL_rewards * KL_mask).sum() / KL_mask.sum().clamp(min=1)
-            KL = KL.clamp(min=0)
-        else:
-            KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1)).detach()
-            KL = self.accelerator.gather(KL_rewards).mean().clamp(min=0)
-
         if policy_chosen_logps.shape[0] != 0:
-            if self.config.loss.humanline:
-                chosen_rewards_token = (policy_chosen_logps - reference_chosen_logps)
-                chosen_mask = (chosen_rewards_token.exp() < self.config.loss.M * torch.rand_like(chosen_rewards_token))
-                chosen_rewards = torch.where(chosen_mask, 0, chosen_rewards_token).sum(-1)
-                ratio = chosen_rewards.shape[0] / (chosen_rewards.abs() != 0).float().sum().clamp(min=1)
-                chosen_KL = KL
-            else:
-                chosen_rewards = (policy_chosen_logps - reference_chosen_logps).sum(-1)
-                ratio = 1
-                chosen_KL = KL
+            chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+        else:
+            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
 
-            chosen_losses = ratio * self.config.loss.desirable_weight * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - chosen_KL)))
+        if policy_rejected_logps.shape[0] != 0:
+            rejected_rewards = self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps)
+        else:
+            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
+
+        KL_rewards = self.get_sequence_rewards(policy_KL_logps.detach(), reference_KL_logps.detach())
+
+        stats = self.accelerator.reduce(torch.Tensor([
+            (chosen_rewards.abs() != 0).float().sum().item(),   # non-empty sequences after rejection sampling
+            len(chosen_rewards),                                
+            (rejected_rewards.abs() != 0).float().sum().item(), # non-empty sequences after rejection sampling
+            len(rejected_rewards),
+            KL_rewards.sum().item(),                            # sum of non-empty KL examples
+            (KL_rewards.abs() != 0).float().sum().item(),       # number of non-empty KL examples
+        ]).to(self.accelerator.device), reduction="sum")
+
+        KL = (stats[4] / stats[5].clamp(min=1)).clamp(min=0)
+        
+        if policy_chosen_logps.shape[0] != 0:
+            chosen_KL = KL
+            chosen_weights = self.config.loss.desirable_weight * (stats[1] / stats[0].clamp(min=1)).item()
+            chosen_losses = chosen_weights * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - chosen_KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            if self.config.loss.humanline:
-                rejected_rewards_token = (policy_rejected_logps - reference_rejected_logps)
-                rejected_mask = (rejected_rewards_token.exp() < self.config.loss.M * torch.rand_like(rejected_rewards_token))
-                rejected_rewards = torch.where(rejected_mask, 0, rejected_rewards_token).sum(-1)
-                ratio = rejected_rewards.shape[0] / (rejected_rewards.abs() != 0).float().sum().clamp(min=1)
-                rejected_KL = 0
-            else:
-                rejected_rewards = (policy_rejected_logps - reference_rejected_logps).sum(-1)
-                ratio = 1
-                rejected_KL = KL
-
-            rejected_losses = ratio * self.config.loss.undesirable_weight * (1 - F.sigmoid(self.config.loss.beta * (rejected_KL - rejected_rewards)))
+            rejected_KL = 0 if self.config.humanline else KL
+            rejected_weights = self.config.loss.undesirable_weight * (stats[3] / stats[2].clamp(min=1)).item()
+            rejected_losses = rejected_weights * (1 - F.sigmoid(self.config.loss.beta * (rejected_KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
 
         losses = torch.cat((chosen_losses, rejected_losses), 0)
 

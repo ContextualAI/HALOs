@@ -70,6 +70,15 @@ cache_reference_logprobs: false
 # path to pickle file of previously cached log probabilities of reference model
 load_reference_logprobs: null
 
+# humanline alignment (from prospect theory)
+humanline: false
+
+# M for rejection sampling
+humanline_M: 1.4
+
+# gamma in capacity function
+humanline_gamma: 0.90
+
 
 ## DATALOADER SETTINGS
 

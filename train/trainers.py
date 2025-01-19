@@ -856,50 +856,6 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         return losses.sum(), metrics
 
 
-class KTOZeroTrainer(UnpairedPreferenceTrainer):
-    def loss(self,
-        batch: Dict,
-        policy_chosen_logps: torch.FloatTensor,
-        policy_rejected_logps: torch.FloatTensor,
-        reference_chosen_logps: torch.FloatTensor,
-        reference_rejected_logps: torch.FloatTensor,
-        *args
-        ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        """Compute a variant of the Kahneman-Tversky loss where the reference point is 0 instead of the expected reward
-        (i.e., the human reference point remains what it is at initialization, when policy = reference). This should NOT
-        be used for purposes other than to understand the importance of the KL term.
-
-        One can also think of this as a variant of unlikelihood training (Welleck et al., 2023). The purpose of this is to understand 
-        the importance of the KL term in the standard variant of the KTO loss. We do *not* reecommend using this in practice as its
-        performance is usually inferior. For each batch of n/2 chosen examples and n/2 rejected examples (belonging to n different 
-        inputs), calculate the loss as follows.
-
-        If generation y ~ p_chosen, where x' ~ are the examples with rejected generations, we have the 'chosen' loss:
-            L(x, y) := 1 - sigmoid(beta * ([log p_policy(y|x) - log p_reference(y|x)] - 0))
-        If generation y ~ p_rejected, , where x' ~ are the examples with chosen generations, we have the 'rejected' loss:
-            L(x, y) := 1 - sigmoid(beta * (0 - [log p_policy(y|x) - log p_reference(y|x)]))
-        """
-        if policy_chosen_logps.shape[0] != 0:
-            chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - 0))
-        else:
-            # important to cast to policy_dtype; otherwise error will occur during all_gather
-            chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-        
-        if policy_rejected_logps.shape[0] != 0:
-            rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (0 - rejected_rewards))
-        else:
-            # important to cast to policy_dtype; otherwise error will occur during all_gather
-            rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-
-        losses = torch.cat((self.config.loss.desirable_weight * chosen_losses, self.config.loss.undesirable_weight * rejected_losses), 0)
-
-        return losses, chosen_rewards, rejected_rewards
-
-
 class PPOTrainer(BasicTrainer):
     policy_hf_model_class = AutoModelForCausalLMWithValueHead
     use_reference_model = True

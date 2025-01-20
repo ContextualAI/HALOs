@@ -175,7 +175,7 @@ class BasicTrainer(object):
         token_rewards = policy_logps - reference_logps
         
         if self.config.humanline:    
-            token_mask = (((1/self.config.humanline_gamma) * policy_logps - self.config.humanline_gamma * reference_logps).exp() < self.config.humanline_M * torch.rand_like(token_rewards))
+            token_mask = (policy_logps - self.config.humanline_gamma * reference_logps).exp() < self.config.humanline_M * torch.rand_like(token_rewards)
             normalization_factor = token_mask.float().sum(-1) if length_normalized else 1
             sequence_rewards = torch.where(token_mask, 0, token_rewards).sum(-1) / normalization_factor
         else:

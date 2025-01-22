@@ -52,7 +52,6 @@ import os
 from collections import defaultdict
 import time
 import json
-import functools
 from typing import Optional, Dict, List, Union, Tuple
 
 
@@ -134,25 +133,7 @@ class BasicTrainer(object):
         per_token_logps = torch.gather(distribution_logps, dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
         return per_token_logps * loss_mask
-        
-    def get_batch_samples(self, batch: Dict[str, torch.LongTensor]) -> Tuple[str, str]:
-        """Generate samples from the policy."""
-        with self.accelerator.autocast():
-            policy_output = self.policy.generate(
-                batch['prompt_input_ids'],
-                attention_mask=batch['prompt_attention_mask'],
-                max_length=self.config.model.max_length,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-                top_p=self.config.top_p,
-            )
-        
-        policy_output = pad_to_length(policy_output, self.config.model.max_length, self.tokenizer.pad_token_id)
-        policy_output = self.accelerator.gather(policy_output)
-        policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
-
-        return policy_output_decoded
-
+    
     def get_sequence_rewards(self, policy_logps, reference_logps, length_normalized=False):
         """
         If regular alignment, return the HALO-defined reward for the sequence (log [policy(y|x)/reference(y|x)]).

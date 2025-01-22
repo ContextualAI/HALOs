@@ -159,10 +159,7 @@ class BasicTrainer(object):
 
         For humanline alignment, do zero-shot rejection sampling. Assume that the examples are drawn from the 
         reference model, zero-out the tokens that don't meet the rejection sampling criterion, then sum over what 
-        remains to get the sequence-level rewards. To adjust for the human-perceived bias, multiply the reference
-        model's log-probabilities by gamma (to simulate the human bias that would've existed at offline data creation)
-        and the policy's log-probabilities by 1 / gamma (this cancels out the human-perceived bias of the "resampled"
-        text, which isn't necessary under the assumption that the policy internalizes the bias over training).
+        remains to get the sequence-level rewards.
         
         Args:
             policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
@@ -174,8 +171,13 @@ class BasicTrainer(object):
         """
         token_rewards = policy_logps - reference_logps
         
-        if self.config.humanline:    
-            token_mask = (policy_logps - self.config.humanline_gamma * reference_logps).exp() < self.config.humanline_M * torch.rand_like(token_rewards)
+        if self.config.humanline:
+            beta_rv = torch.distributions.beta.Beta(self.config.humanline_alpha, 1)
+            beta_sample = beta_rv.sample(policy_logps.shape).to(self.accelerator.device)
+            # constant M for rejection sampling, estimated across microbatch
+            M = torch.max((policy_logps - reference_logps).exp()).item()
+
+            token_mask = (policy_logps - reference_logps).exp() < M * beta_sample
             normalization_factor = token_mask.float().sum(-1) if length_normalized else 1
             sequence_rewards = torch.where(token_mask, 0, token_rewards).sum(-1) / normalization_factor
         else:
@@ -300,6 +302,9 @@ class BasicTrainer(object):
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
 
+            if self.config.humanline:
+                self.sync_reference_with_policy()
+
             # TRAINING
             self.policy.train()
             accumulated = 0
@@ -389,6 +394,7 @@ class BasicTrainer(object):
             )
             unwrapped_model = self.accelerator.unwrap_model(self.policy).base_model
         else:
+            # by default, get_state_dict unwraps model before getting the state_dict
             state_dict = self.accelerator.get_state_dict(self.policy)
             unwrapped_model = self.accelerator.unwrap_model(self.policy)
 
@@ -400,6 +406,14 @@ class BasicTrainer(object):
             safe_serialization=False
         )
             
+        self.accelerator.wait_for_everyone()
+
+    def sync_reference_with_policy(self):
+        """
+        Update the reference model to have the policy weights.
+        """
+        state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
+        self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
         self.accelerator.wait_for_everyone()
 
     def free_memory(self):
@@ -755,17 +769,15 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         KL = (stats[4] / stats[5].clamp(min=1)).clamp(min=0)
         
         if policy_chosen_logps.shape[0] != 0:
-            chosen_KL = KL
             chosen_weights = self.config.loss.desirable_weight * (stats[1] / stats[0].clamp(min=1)).item()
-            chosen_losses = chosen_weights * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - chosen_KL)))
+            chosen_losses = chosen_weights * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            rejected_KL = 0 if self.config.humanline else KL
             rejected_weights = self.config.loss.undesirable_weight * (stats[3] / stats[2].clamp(min=1)).item()
-            rejected_losses = rejected_weights * (1 - F.sigmoid(self.config.loss.beta * (rejected_KL - rejected_rewards)))
+            rejected_losses = rejected_weights * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)

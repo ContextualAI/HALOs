@@ -73,12 +73,8 @@ load_reference_logprobs: null
 # humanline alignment (from prospect theory)
 humanline: false
 
-# M for rejection sampling
-humanline_M: 1.4
-
 # gamma in capacity function
-humanline_gamma: 0.90
-
+humanline_alpha: 1.50
 
 ## DATALOADER SETTINGS
 

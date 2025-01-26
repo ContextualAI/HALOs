@@ -12,7 +12,7 @@ debug: false
 
 # wandb configuration
 wandb:
-  enabled: true
+  enabled: false
   entity: null
   project: "halos"
 
@@ -79,6 +79,13 @@ humanline_M: 1.4
 # gamma in capacity function
 humanline_gamma: 0.90
 
+sampling_datasets: ["alpacaeval"]
+
+num_samples_per_prompt: 2
+
+sampling_mode: train
+
+feedback_type: pairwise
 
 ## DATALOADER SETTINGS
 

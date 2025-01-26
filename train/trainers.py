@@ -28,12 +28,20 @@ from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer
 from accelerate import Accelerator
 from argparse import Namespace
-import train.sample as sampling_module
-# from ..label import main as label
-import pdb
+# import train.sample as sampling_module
+from vllm import LLM, SamplingParams
+import label as labeling_module
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import torch.distributed as dist
+dist.init_process_group("nccl", init_method='env://') 
+
+# dist.init_process_group(
+#     backend='nccl', 
+#     init_method='env://', 
+#     rank = torch.cuda.device_count(), 
+#     world_size = 1
+# )
 
 from . import dataloader
 from .utils import (
@@ -57,6 +65,132 @@ import time
 import json
 import functools
 from typing import Optional, Dict, List, Union, Tuple
+
+import logging
+
+logging.basicConfig(
+    level=logging.DEBUG,  # Set to DEBUG to capture all levels of logs
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(),  # Logs to console
+        logging.FileHandler("trainer_debug.log")  # Logs to a file
+    ]
+)
+
+logger = logging.getLogger(__name__)
+
+
+import argparse
+import re
+import os
+import inspect
+from vllm import LLM, SamplingParams
+from transformers import AutoTokenizer
+from train.dataloader import SFTDataLoader
+from train.utils import set_offline_if_needed
+from vllm.distributed.parallel_state import (
+    destroy_model_parallel,
+    destroy_distributed_environment,
+)
+import train.dataloader as dataloader_module
+from .utils import StreamingJSONWriter
+
+
+def get_available_datasets():
+    """Get list of available datasets by finding all get_* functions in dataloader.py"""
+    return [name[4:] for name, _ in inspect.getmembers(dataloader_module, inspect.isfunction) 
+            if name.startswith('get_')]
+
+
+def validate_datasets(datasets):
+    """Validate that all requested datasets have corresponding get_* functions"""
+    available_datasets = get_available_datasets()
+    invalid_datasets = [d for d in datasets if d not in available_datasets]
+    
+    if invalid_datasets:
+        available_str = "\n- ".join(available_datasets)
+        raise ValueError(
+            f"The following datasets are not available: {invalid_datasets}\n"
+            f"Available datasets must have a corresponding get_* function in dataloader.py.\n"
+            f"Currently available datasets are:\n- {available_str}"
+        )
+
+
+def sampling_module(args):
+    validate_datasets(args.datasets)
+    set_offline_if_needed()
+    
+    # Load the model and tokenizer
+    print(f"Loading model and tokenizer from {args.model_path}")
+    llm = LLM(model=args.model_path, tensor_parallel_size=args.gpu_count)
+    print("loading llm is okay")
+    tokenizer = AutoTokenizer.from_pretrained(args.model_path)
+    tokenizer.chat_template = open('config/template.jinja').read()
+    if tokenizer.pad_token_id is None:
+        tokenizer.pad_token_id = tokenizer.eos_token_id
+    print("loading tokenizer is okay")
+    
+    sampling_params = SamplingParams(
+        temperature=args.temperature,
+        top_p=args.top_p,
+        max_tokens=args.max_tokens,
+        stop=[args.stop_token],
+        n=args.num_samples_per_prompt
+    )
+    print("setting sampling params is okay")
+
+    prompt_idx = 0
+    # Open the output file and create a streaming writer
+    with open(args.output_file, 'w') as f:
+        writer = StreamingJSONWriter(f)
+
+        # Process each dataset
+        for dataset in args.datasets:
+            print(f"\nProcessing dataset: {dataset}")
+
+            # Initialize the SFTDataLoader
+            dataloader = SFTDataLoader(
+                dataset_names=[dataset],
+                tokenizer=tokenizer,
+                split=args.split,
+                max_prompt_length=args.max_prompt_length,
+                n_epochs=1,
+                seed=args.seed,
+                microbatch_size=args.batch_size
+            )
+
+            # Process the dataset in batches
+            for batch in dataloader:
+                # prompt_text has already had the chat template applied
+                responses = llm.generate(batch['prompt_text'], sampling_params)
+
+                # Process and write each output
+                for prompt, response in zip(batch['prompt'], responses):
+                    for sample_idx, sample in enumerate(response.outputs):
+                        output = {
+                            "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
+                            "generator": args.model_path,
+                            "dataset": f"{dataset}_{args.split}",
+                            "prompt_id": prompt_idx,
+                            "sample_id": sample_idx,
+                            "type": "sample",
+                        }
+
+                        # for eval with alpacaeval
+                        if args.mode == "alpacaeval":
+                            output["instruction"] = prompt[0]["content"]
+                        else:
+                            output["prompt"] = prompt
+
+                        writer.write_item(output)
+
+                    prompt_idx += 1
+
+        writer.close()
+
+    print("sampling is done!")
+    destroy_model_parallel()
+    destroy_distributed_environment()
 
 
 class BasicTrainer(object):
@@ -93,7 +227,8 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
-        self.policy_online = getattr(bool, config.model.policy_online)
+        self.policy_online = bool(config.model.policy_online)
+        self.policy_online_update_steps = config.model.policy_online_update_steps
 
         self.reference_model = reference_model
         self.train_iterator = train_iterator
@@ -235,7 +370,7 @@ class BasicTrainer(object):
                 'results': a dict of batch metrics (averaged across all of the test data)
             }
         """
-        self.accelerator.print(f'Running evaluation after {self.example_counter} train examples')
+        logger.info(f'Running evaluation after {self.example_counter} train examples')
         self.policy.eval()
 
         if self.reference_model is not None:
@@ -274,9 +409,8 @@ class BasicTrainer(object):
 
     def train(self):
         """Begin either SFT or HALO training, with periodic evaluation. This is subclassed when implementing PPO."""
+        logger.info(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
 
-        self.accelerator.print(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
-        
         if self.reference_model is not None:
             self.reference_model.eval()
 
@@ -295,13 +429,13 @@ class BasicTrainer(object):
 
                 if self.example_counter > 0:
                     if self.config.debug:
-                        self.accelerator.print('skipping save in debug mode')
+                        logger.info('skipping save in debug mode')
                     elif self.config.intermediate_checkpoints:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
-                        self.accelerator.print(f'creating checkpoint to write to {output_dir}...')
+                        logger.info(f'creating checkpoint to write to {output_dir}...')
                         self.save(output_dir, results['results'], final_save=False)
 
-                self.accelerator.print(results['results'])
+                logger.info(results['results'])
                 delete_dicts(results)
 
             # TRAINING
@@ -309,21 +443,72 @@ class BasicTrainer(object):
             accumulated = 0
             start_time = time.time()
             
-            with self.accelerator.accumulate(self.policy):
-                batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                loss, metrics = self.get_batch_metrics(batch)
-                self.accelerator.backward(loss)
+            try:
+                with self.accelerator.accumulate(self.policy):
+                    batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    loss, metrics = self.get_batch_metrics(batch)
+                    self.accelerator.backward(loss)
 
-                for k, v in metrics.items():
-                    batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
+                    for k, v in metrics.items():
+                        batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
-                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
-                self.optimizer.step()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
-                accumulated += 1
+                    grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+                    batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.optimizer.zero_grad()
+                    accumulated += 1
                     
+                    if self.policy_online:
+                    # if self.policy_online and self.example_counter % (self.config.model.batch_size * self.config.model.policy_online_update_steps) == 0:
+                        logger.info(f"online learning: {self.policy_online}")
+                        logger.info(f"updating policy every {self.config.model.batch_size * self.config.model.policy_online_update_steps} steps...")
+                        logger.info("Saving test model...")
+                        self.save(
+                            os.path.join(self.run_dir, f'step-{self.example_counter}'),
+                            metrics={'counter': self.example_counter},
+                            final_save=False,
+                        )
+                        
+                        kwargs = {
+                            "model_path": os.path.join(self.run_dir, f'step-{self.example_counter}'),
+                            "output_file": os.path.join(self.run_dir, f'step-{self.example_counter}-samples.json'),
+                            "gpu_count": self.accelerator.num_processes,
+                            "datasets": self.config.sampling_datasets,
+                            "num_samples_per_prompt": self.config.num_samples_per_prompt,
+                            "mode": self.config.sampling_mode,
+                        }
+                        logger.info(kwargs)
+                        logger.info(sampling_module)
+                        logger.info(self.reward_model)
+                        logger.info(labeling_module.main)
+                        logger.info("module loading is okay.")
+                        # sampling_module.main(Namespace(**kwargs))
+                        sampling_module(Namespace(**kwargs))
+                        
+                        
+                        logger.info("sampling module is okay.")
+                        samples = [json.load(open(os.path.join(self.run_dir, f'step-{self.example_counter}-samples.json')))]
+                        logger.info(len(samples))
+                        
+                        if self.reward_model is not None:
+                            rwargs = {
+                                "reward_model_path": self.reward_model.path,
+                                "samples_path": os.path.join(self.run_dir, f'step-{self.example_counter}-samples.json'),
+                                "output_path": os.path.join(self.run_dir, f'step-{self.example_counter}-samples-w-rewards.json'),
+                                "feedback_type": self.config.feedback_type,
+                            }
+                            logger.info(rwargs)
+                            labeling_module.main(Namespace(**rwargs))
+                            logger.info("labeling module is okay.")
+                        else:
+                            logger.info("reward model not specified. skipping labeling.")
+                        
+            except Exception as e:
+                logger.error("An error occurred during training: {}".format(e))
+                # import pdb; pdb.set_trace()
+                break
+                
 
             step_time = time.time() - start_time
             examples_per_second = self.config.model.batch_size / step_time
@@ -340,7 +525,7 @@ class BasicTrainer(object):
 
                 mean_train_metrics['counters/examples'] = self.example_counter
                 mean_train_metrics['counters/updates'] = self.batch_counter
-                self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
+                logger.info(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
 
                 if self.config.wandb.enabled and self.accelerator.is_main_process:
                     wandb.log(mean_train_metrics, step=self.example_counter)
@@ -348,7 +533,7 @@ class BasicTrainer(object):
                 last_log = time.time()
                 batch_metrics = defaultdict(list)
             else:
-                self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+                logger.info(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
             delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
 
@@ -358,13 +543,13 @@ class BasicTrainer(object):
 
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
-        self.accelerator.print(f"Saving...")
+        logger.info(f"Saving...")
         if output_dir is None:
             output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
 
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
-            self.accelerator.print(f"Saving tokenizer...")
+            logger.info(f"Saving tokenizer...")
             self.tokenizer.save_pretrained(output_dir)
 
             with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
@@ -372,7 +557,7 @@ class BasicTrainer(object):
                 json.dump(metrics, f)
         
         self.accelerator.wait_for_everyone()
-        self.accelerator.print(f"Saving state...")
+        logger.info(f"Saving state...")
         optimizer = self.accelerator.unwrap_model(self.optimizer)
         scheduler = self.accelerator.unwrap_model(self.scheduler)
         if self.accelerator.is_main_process:
@@ -384,7 +569,7 @@ class BasicTrainer(object):
             torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
         
         self.accelerator.wait_for_everyone()
-        self.accelerator.print(f"Saving model...")
+        logger.info(f"Saving model...")
 
         if self.config.model.use_peft and final_save:
             state_dict = get_base_model_state_dict_from_peft(
@@ -1081,7 +1266,7 @@ class PPOTrainer(BasicTrainer):
                 'results': a dict of batch metrics (averaged across all of the test data)
             }
         """
-        self.accelerator.print(f'Running evaluation after {self.example_counter} train examples')
+        logger.info(f'Running evaluation after {self.example_counter} train examples')
         self.policy.eval()
 
         for eval_batch in (tqdm(self.eval_iterator, desc='Computing eval metrics') if self.accelerator.is_main_process else self.eval_iterator):
@@ -1117,7 +1302,7 @@ class PPOTrainer(BasicTrainer):
 
     def train(self):
         """Train with PPO."""
-        self.accelerator.print(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
+        logger.info(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
         self.optimizer = getattr(torch.optim, self.config.optimizer)(self.policy.parameters(), lr=self.config.lr)
         self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (self.config.warmup_steps + 1)))
 
@@ -1139,13 +1324,13 @@ class PPOTrainer(BasicTrainer):
 
                 if self.example_counter > 0:
                     if self.config.debug:
-                        self.accelerator.print('skipping save in debug mode')
+                        logger.info('skipping save in debug mode')
                     elif self.config.intermediate_checkpoints:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
-                        self.accelerator.print(f'creating checkpoint to write to {output_dir}...')
+                        logger.info(f'creating checkpoint to write to {output_dir}...')
                         self.save(output_dir, results['results'], final_save=False)
 
-                self.accelerator.print(results['results'])
+                logger.info(results['results'])
                 delete_dicts(results)
 
             # TRAINING
@@ -1186,7 +1371,7 @@ class PPOTrainer(BasicTrainer):
 
                 mean_train_metrics['counters/examples'] = self.example_counter
                 mean_train_metrics['counters/updates'] = self.batch_counter
-                self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
+                logger.info(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
 
                 if self.config.wandb.enabled and self.accelerator.is_main_process:
                     wandb.log(mean_train_metrics, step=self.example_counter)
@@ -1196,7 +1381,7 @@ class PPOTrainer(BasicTrainer):
                 delete_dicts(batch_metrics, mean_train_metrics)
                 batch_metrics = defaultdict(list)    
             else:
-                self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+                logger.info(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
     def get_batch_metrics(self, global_batch_dict: Dict, microbatch_size: int=0, mode:str='train'):
         """
@@ -1236,13 +1421,13 @@ class PPOTrainer(BasicTrainer):
 
     def save(self, output_dir=None, metrics={}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
-        self.accelerator.print(f"Saving...")
+        logger.info(f"Saving...")
         if output_dir is None:
             output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
 
         if self.accelerator.is_main_process:
             os.makedirs(output_dir, exist_ok=True)
-            self.accelerator.print(f"Saving tokenizer...")
+            logger.info(f"Saving tokenizer...")
             self.tokenizer.save_pretrained(output_dir)
 
             with open(os.path.join(output_dir, 'metrics.json'), 'w') as f:
@@ -1250,7 +1435,7 @@ class PPOTrainer(BasicTrainer):
                 json.dump(metrics, f)
         
         self.accelerator.wait_for_everyone()
-        self.accelerator.print(f"Saving state...")
+        logger.info(f"Saving state...")
         optimizer = self.accelerator.unwrap_model(self.optimizer)
         scheduler = self.accelerator.unwrap_model(self.scheduler)
         if self.accelerator.is_main_process:
@@ -1262,7 +1447,7 @@ class PPOTrainer(BasicTrainer):
             torch.save(scheduler.state_dict(), os.path.join(output_dir, "scheduler.pt"))
     
         self.accelerator.wait_for_everyone()
-        self.accelerator.print(f"Saving model...")
+        logger.info(f"Saving model...")
 
         if self.config.model.use_peft and final_save:
             state_dict = get_base_model_state_dict_from_peft(

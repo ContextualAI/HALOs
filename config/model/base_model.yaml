@@ -18,6 +18,12 @@ block_name: null
 # the dtype for the policy parameters/optimizer state
 policy_dtype: bfloat16
 
+# if online policy is enabled
+policy_online: true
+
+# the number of steps required for each policy update
+policy_online_update_steps: 32
+
 # the dtype for the reference model (which is used for inference only)
 reference_dtype: bfloat16
 
@@ -65,7 +71,8 @@ peft:
 
 # auxiliary reward model (e.g., for PPO)
 reward_model:
-  path: null
+  # path: null
+  path: /scratch/gpfs/sl2998/models/llama3-8B-reward/FINAL
   model_class: AutoModelForBradleyTerry
   dtype: float32
   attn_implementation: flash_attention_2

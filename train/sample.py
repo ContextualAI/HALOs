@@ -62,11 +62,13 @@ def main(args):
     # Load the model and tokenizer
     print(f"Loading model and tokenizer from {args.model_path}")
     llm = LLM(model=args.model_path, tensor_parallel_size=args.gpu_count)
+    print("loading llm is okay")
     tokenizer = AutoTokenizer.from_pretrained(args.model_path)
     tokenizer.chat_template = open('config/template.jinja').read()
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-
+    print("loading tokenizer is okay")
+    
     sampling_params = SamplingParams(
         temperature=args.temperature,
         top_p=args.top_p,
@@ -74,6 +76,7 @@ def main(args):
         stop=[args.stop_token],
         n=args.num_samples_per_prompt
     )
+    print("setting sampling params is okay")
 
     prompt_idx = 0
     # Open the output file and create a streaming writer
@@ -124,6 +127,7 @@ def main(args):
 
         writer.close()
 
+    print("sampling is done!")
     destroy_model_parallel()
     destroy_distributed_environment()
 
@@ -143,6 +147,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples_per_prompt", type=int, default=1, help="Number of samples to generate per input")
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
     parser.add_argument("--mode", type=str, default="alpacaeval", help="mode")
-  
+
     args = parser.parse_args()
     main(args)

@@ -856,7 +856,6 @@ class SimPOTrainer(PairedPreferenceTrainer):
         # implicit reference model that assigns probability 1 (logp = 0) to all tokens
         chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, torch.zeros_like(policy_chosen_logps).to(self.accelerator.device), length_normalized=True)
         rejected_rewards = self.get_sequence_rewards(policy_rejected_logps, torch.zeros_like(policy_rejected_logps).to(self.accelerator.device), length_normalized=True)
-        
         losses = -F.logsigmoid(self.config.loss.beta * (chosen_rewards - rejected_rewards - self.config.loss.gamma_beta_ratio))
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach()

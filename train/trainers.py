@@ -25,7 +25,7 @@ import transformers
 import gc
 from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, AutoModelForBradleyTerry
 from omegaconf import OmegaConf, DictConfig
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, GenerationConfig
 from accelerate import Accelerator
 import pdb
 
@@ -53,6 +53,7 @@ from collections import defaultdict
 import time
 import json
 from typing import Optional, Dict, List, Union, Tuple
+from contextlib import nullcontext
 
 
 class BasicTrainer(object):
@@ -397,6 +398,51 @@ class BasicTrainer(object):
         state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
         self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
         self.accelerator.wait_for_everyone()
+
+    def sample(self, model, prompt: str, temp: float=0.7):
+        """
+        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
+        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
+        model with the policy via sync_reference_with_policy, then sample from reference model.
+
+        Args:
+            model: the model to sample from (the reference model in most cases)
+            prompt: the prompt
+            temp: temperature for sampling
+
+        Returns:
+            Completion for the prompt.
+        """
+        generation_config = GenerationConfig(
+            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
+            do_sample=True,
+            temperature=temp,
+            num_return_sequences=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+
+        prompt_inputs = self.train_iterator.tokenize_batch_element(
+            [{"role": "user", "content" : prompt}], 
+            [{"role": "assistant", "content": ""}], 
+            'keep_start'
+        )
+        input_ids = torch.LongTensor(prompt_inputs['prompt_input_ids']).unsqueeze(0).to(self.accelerator.device)
+
+        model.eval()
+
+        if self.accelerator.state.fsdp_plugin is not None:
+            context = FSDP.summon_full_params(model)
+        else:
+            context = nullcontext
+
+        with context:
+            with torch.no_grad():
+                prompt_completion_ids = model.generate(input_ids, generation_config=generation_config)
+                prompt_length = len(prompt_inputs["prompt_input_ids"])
+                completion_ids = prompt_completion_ids[:, prompt_length:]
+                completion = self.tokenizer.decode(completion_ids[0,:].tolist(), skip_special_tokens=True)
+        
+        return completion
 
     def free_memory(self):
         torch.cuda.empty_cache()

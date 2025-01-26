@@ -153,7 +153,8 @@ class BasicTrainer(object):
         token_rewards = policy_logps - reference_logps
         
         if self.config.humanline:
-            beta_rv = torch.distributions.beta.Beta(self.config.humanline_alpha, 1)
+            beta_rv = torch.distributions.beta.Beta(self.config.humanline_alpha, 1.0)
+            torch.manual_seed(self.seed)
             beta_sample = beta_rv.sample(policy_logps.shape).to(self.accelerator.device)
             # constant M for rejection sampling, estimated across microbatch
             M = torch.max((policy_logps - reference_logps).exp()).item()
@@ -743,7 +744,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             len(chosen_rewards),                                
             (rejected_rewards.abs() != 0).float().sum().item(), # non-empty sequences after rejection sampling
             len(rejected_rewards),
-            KL_rewards.sum().item(),                            # sum of non-empty KL examples
+            KL_rewards.sum(),                                   # sum of non-empty KL examples
             (KL_rewards.abs() != 0).float().sum().item(),       # number of non-empty KL examples
         ]).to(self.accelerator.device), reduction="sum")
 

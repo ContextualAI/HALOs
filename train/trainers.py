@@ -25,7 +25,7 @@ import transformers
 import gc
 from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, AutoModelForBradleyTerry
 from omegaconf import OmegaConf, DictConfig
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, GenerationConfig
 from accelerate import Accelerator
 from argparse import Namespace
 # import train.sample as sampling_module
@@ -63,8 +63,8 @@ import os
 from collections import defaultdict
 import time
 import json
-import functools
 from typing import Optional, Dict, List, Union, Tuple
+from contextlib import nullcontext
 
 import logging
 
@@ -273,35 +273,14 @@ class BasicTrainer(object):
         per_token_logps = torch.gather(distribution_logps, dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
         return per_token_logps * loss_mask
-        
-    def get_batch_samples(self, batch: Dict[str, torch.LongTensor]) -> Tuple[str, str]:
-        """Generate samples from the policy."""
-        with self.accelerator.autocast():
-            policy_output = self.policy.generate(
-                batch['prompt_input_ids'],
-                attention_mask=batch['prompt_attention_mask'],
-                max_length=self.config.model.max_length,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-                top_p=self.config.top_p,
-            )
-        
-        policy_output = pad_to_length(policy_output, self.config.model.max_length, self.tokenizer.pad_token_id)
-        policy_output = self.accelerator.gather(policy_output)
-        policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
-
-        return policy_output_decoded
-
+    
     def get_sequence_rewards(self, policy_logps, reference_logps, length_normalized=False):
         """
         If regular alignment, return the HALO-defined reward for the sequence (log [policy(y|x)/reference(y|x)]).
 
         For humanline alignment, do zero-shot rejection sampling. Assume that the examples are drawn from the 
         reference model, zero-out the tokens that don't meet the rejection sampling criterion, then sum over what 
-        remains to get the sequence-level rewards. To adjust for the human-perceived bias, multiply the reference
-        model's log-probabilities by gamma (to simulate the human bias that would've existed at offline data creation)
-        and the policy's log-probabilities by 1 / gamma (this cancels out the human-perceived bias of the "resampled"
-        text, which isn't necessary under the assumption that the policy internalizes the bias over training).
+        remains to get the sequence-level rewards.
         
         Args:
             policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
@@ -313,8 +292,14 @@ class BasicTrainer(object):
         """
         token_rewards = policy_logps - reference_logps
         
-        if self.config.humanline:    
-            token_mask = (policy_logps - self.config.humanline_gamma * reference_logps).exp() < self.config.humanline_M * torch.rand_like(token_rewards)
+        if self.config.humanline:
+            beta_rv = torch.distributions.beta.Beta(self.config.humanline_alpha, 1.0)
+            torch.manual_seed(self.seed)
+            beta_sample = beta_rv.sample(policy_logps.shape).to(self.accelerator.device)
+            # constant M for rejection sampling, estimated across microbatch
+            M = torch.max((policy_logps - reference_logps).exp()).item()
+
+            token_mask = (policy_logps - reference_logps).exp() < M * beta_sample
             normalization_factor = token_mask.float().sum(-1) if length_normalized else 1
             sequence_rewards = torch.where(token_mask, 0, token_rewards).sum(-1) / normalization_factor
         else:
@@ -437,6 +422,9 @@ class BasicTrainer(object):
 
                 logger.info(results['results'])
                 delete_dicts(results)
+
+            if self.config.humanline:
+                self.sync_reference_with_policy()
 
             # TRAINING
             self.policy.train()
@@ -579,6 +567,7 @@ class BasicTrainer(object):
             )
             unwrapped_model = self.accelerator.unwrap_model(self.policy).base_model
         else:
+            # by default, get_state_dict unwraps model before getting the state_dict
             state_dict = self.accelerator.get_state_dict(self.policy)
             unwrapped_model = self.accelerator.unwrap_model(self.policy)
 
@@ -591,6 +580,59 @@ class BasicTrainer(object):
         )
             
         self.accelerator.wait_for_everyone()
+
+    def sync_reference_with_policy(self):
+        """
+        Update the reference model to have the policy weights.
+        """
+        state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
+        self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
+        self.accelerator.wait_for_everyone()
+
+    def sample(self, model, prompt: str, temp: float=0.7):
+        """
+        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
+        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
+        model with the policy via sync_reference_with_policy, then sample from reference model.
+
+        Args:
+            model: the model to sample from (the reference model in most cases)
+            prompt: the prompt
+            temp: temperature for sampling
+
+        Returns:
+            Completion for the prompt.
+        """
+        generation_config = GenerationConfig(
+            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
+            do_sample=True,
+            temperature=temp,
+            num_return_sequences=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+
+        prompt_inputs = self.train_iterator.tokenize_batch_element(
+            [{"role": "user", "content" : prompt}], 
+            [{"role": "assistant", "content": ""}], 
+            'keep_start'
+        )
+        input_ids = torch.LongTensor(prompt_inputs['prompt_input_ids']).unsqueeze(0).to(self.accelerator.device)
+
+        model.eval()
+
+        if self.accelerator.state.fsdp_plugin is not None:
+            context = FSDP.summon_full_params(model)
+        else:
+            context = nullcontext
+
+        with context:
+            with torch.no_grad():
+                prompt_completion_ids = model.generate(input_ids, generation_config=generation_config)
+                prompt_length = len(prompt_inputs["prompt_input_ids"])
+                completion_ids = prompt_completion_ids[:, prompt_length:]
+                completion = self.tokenizer.decode(completion_ids[0,:].tolist(), skip_special_tokens=True)
+        
+        return completion
 
     def free_memory(self):
         torch.cuda.empty_cache()
@@ -937,24 +979,22 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             len(chosen_rewards),                                
             (rejected_rewards.abs() != 0).float().sum().item(), # non-empty sequences after rejection sampling
             len(rejected_rewards),
-            KL_rewards.sum().item(),                            # sum of non-empty KL examples
+            KL_rewards.sum(),                                   # sum of non-empty KL examples
             (KL_rewards.abs() != 0).float().sum().item(),       # number of non-empty KL examples
         ]).to(self.accelerator.device), reduction="sum")
 
         KL = (stats[4] / stats[5].clamp(min=1)).clamp(min=0)
         
         if policy_chosen_logps.shape[0] != 0:
-            chosen_KL = KL
             chosen_weights = self.config.loss.desirable_weight * (stats[1] / stats[0].clamp(min=1)).item()
-            chosen_losses = chosen_weights * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - chosen_KL)))
+            chosen_losses = chosen_weights * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            rejected_KL = 0 if self.config.humanline else KL
             rejected_weights = self.config.loss.undesirable_weight * (stats[3] / stats[2].clamp(min=1)).item()
-            rejected_losses = rejected_weights * (1 - F.sigmoid(self.config.loss.beta * (rejected_KL - rejected_rewards)))
+            rejected_losses = rejected_weights * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)

@@ -223,6 +223,38 @@ class BasicTrainer(object):
         """
         raise NotImplementedError
 
+    def get_reward_scores(self, batch: Dict[str, torch.LongTensor]) -> torch.FloatTensor:
+        """Get reward scores from reward model.
+        
+        Args:
+            batch: Dictionary containing batch data
+            
+        Returns:
+            torch.FloatTensor of shape (microbatch_size,) containing reward scores
+        """
+        if self.reward_model is not None:
+            # Decode the sequences using policy tokenizer
+            sequences = self.tokenizer.batch_decode(batch['target_combined_input_ids'], skip_special_tokens=True)
+            # Encode with reward model tokenizer
+            reward_inputs = self.reward_tokenizer(
+                sequences,
+                padding=True,
+                truncation=True,
+                return_tensors='pt',
+                max_length=self.config.model.max_length
+            ).to(self.accelerator.device)
+
+            with torch.no_grad():
+                # Get reward model scores
+                outputs = self.reward_model(reward_inputs['input_ids'], attention_mask=reward_inputs['attention_mask'])
+                # Use the positive class logit as the reward score
+                reward_scores = outputs.logits[:, 1]
+        else:
+            # Use binary labels (1 for chosen, -1 for rejected)
+            reward_scores = torch.tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(len(batch['status']))])
+
+        return reward_scores
+
     def eval(self) -> Dict[str, Dict]:
         """
         Run evaluation on all the examples in the test data and return the metrics from get_batch_metrics.
@@ -304,180 +336,70 @@ class BasicTrainer(object):
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
 
-            try:
-                if self.config.humanline:
-                    
-                    self.sync_reference_with_policy()
-                    
-                    completions = self.sample(self.reference_model, batch)
-                    batch = self.update_batch(batch, completions)
-                    
-                    # TRAINING
-                    self.accelerator.print("training started...")
-                    self.policy.train()
-                    accumulated = 0
-                    start_time = time.time()
-                    
-                    with self.accelerator.accumulate(self.policy):
-                        batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                        loss, metrics = self.get_batch_metrics(batch)
-                        self.accelerator.backward(loss)
-                    
-                        for k, v in metrics.items():
-                            batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
+            if self.config.humanline:
+                self.sync_reference_with_policy()
+                completions = self.batch_sample(self.reference_model, batch)
+                batch = self.update_batch(batch, completions)
+            
+            if self.reward_model is not None:
+                scores = self.get_reward_scores(batch).to(self.policy_dtype).to(self.accelerator.device)
+                masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype).to(self.accelerator.device)
+                rewards = torch.zeros_like(masks)
+                for row in range(rewards.shape[0]):
+                    rewards[row, masks[row].nonzero()[-1]] += scores[row]
+                rewards = rewards * masks
+                batch['rewards'] = rewards
+            
+            # TRAINING
+            self.policy.train()
+            accumulated = 0
+            start_time = time.time()
+            
+            with self.accelerator.accumulate(self.policy):
+                batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                loss, metrics = self.get_batch_metrics(batch)
+                self.accelerator.backward(loss)
+            
+                for k, v in metrics.items():
+                    batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
-                        grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                        batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
-                        self.optimizer.step()
-                        self.scheduler.step()
-                        self.optimizer.zero_grad()
-                        accumulated += 1
-                        
-                        step_time = time.time() - start_time
-                        examples_per_second = self.config.model.batch_size / step_time
-                        batch_metrics['examples_per_second'].append(examples_per_second)
-                        
-                        self.batch_counter += 1
-                        self.example_counter += self.config.model.batch_size
-
-                        if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
-                            mean_train_metrics = {}
-                            for k, v in batch_metrics.items():
-                                if len(v) > 0:
-                                    mean_train_metrics[k] = sum(v) / len(v)
-
-                            mean_train_metrics['counters/examples'] = self.example_counter
-                            mean_train_metrics['counters/updates'] = self.batch_counter
-                            self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
-
-                            if self.config.wandb.enabled and self.accelerator.is_main_process:
-                                wandb.log(mean_train_metrics, step=self.example_counter)
-
-                            last_log = time.time()
-                            batch_metrics = defaultdict(list)
-                        else:
-                            self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
-
-                        delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
-
-                        if accumulated >= self.config.model.gradient_accumulation_steps:
-                            self.free_memory()
-                            accumulated = 0
-                            
-            except Exception as e:
-                # Log the error and re-raise
-                logger.error(f"Error during the main training function: {e}")
-                import pdb; pdb.set_trace()
-                raise
+                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
+                self.optimizer.step()
+                self.scheduler.step()
+                self.optimizer.zero_grad()
+                accumulated += 1
                 
-    def sample(self, model, batch: Dict, temp: float=0.7):
-        """
-        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
-        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
-        model with the policy via sync_reference_with_policy, then sample from reference model.
+                step_time = time.time() - start_time
+                examples_per_second = self.config.model.batch_size / step_time
+                batch_metrics['examples_per_second'].append(examples_per_second)
+                
+                self.batch_counter += 1
+                self.example_counter += self.config.model.batch_size
 
-        Args:
-            model: the model to sample from (the reference model in most cases)
-            batch: the sample batch returned from the iterative data loader
-            temp: temperature for sampling
+                if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
+                    mean_train_metrics = {}
+                    for k, v in batch_metrics.items():
+                        if len(v) > 0:
+                            mean_train_metrics[k] = sum(v) / len(v)
 
-        Returns:
-            Completion for the prompt.
-        """
-        try:
-            generation_config = GenerationConfig(
-                max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
-                do_sample=True,
-                temperature=temp,
-                num_return_sequences=1,
-                pad_token_id=self.tokenizer.pad_token_id,
-            )
-            
-            batch_elements = [
-                self.train_iterator.tokenize_batch_element(
-                                [{"role": "user", "content" : prompt}], 
-                                [{"role": "assistant", "content": ""}], 
-                                'keep_start'
-                            ) for prompt in batch['prompt_text']
-            ]
-            batch_elements = self.train_iterator.collate(batch_elements)
-            batch_input_ids = batch_elements['prompt_input_ids'].to(self.accelerator.device)
-            max_prompt_length = max(len(seq) for seq in batch_input_ids)
-            
-            model.eval()
+                    mean_train_metrics['counters/examples'] = self.example_counter
+                    mean_train_metrics['counters/updates'] = self.batch_counter
+                    self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
 
-            if self.accelerator.state.fsdp_plugin is not None:
-                context = FSDP.summon_full_params(model)
-                self.accelerator.print("Summoning full parameters from the reference model:")
-                for name, param in model.named_parameters():
-                    print(f"{name}: {param.shape}")
-            else:
-                context = nullcontext
+                    if self.config.wandb.enabled and self.accelerator.is_main_process:
+                        wandb.log(mean_train_metrics, step=self.example_counter)
 
-            with context:
-                with torch.no_grad():
-                    batch_completion_ids = model.generate(batch_input_ids, generation_config=generation_config)
-                    batch_completion_ids = batch_completion_ids[:, max_prompt_length:]
-                    batch_completions = self.tokenizer.batch_decode(batch_completion_ids, skip_special_tokens=True)
-                    
-            return batch_completions
-        
-        except Exception as e:
-            # Log the error and re-raise
-            logger.error(f"Error during batch sampling: {e}")
-            raise
+                    last_log = time.time()
+                    batch_metrics = defaultdict(list)
+                else:
+                    self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-    def update_batch(self, batch: Dict, completions: List[str]):
-        
-        """
-        Args:
-            batch: the original offline batch
-            completions: the online generations from the updated reference model (after syncing weights with policy model)
-            
-        Returns:
-            updated_batch: the updated online batch
-        """
-        updated_batch = []
-        for i, prompt in enumerate(batch['prompt']):
-            batch_element = self.train_iterator.tokenize_batch_element(
-                prompt, 
-                [{"role": "assistant", "content": completions[i]}], 
-                'keep_start',
-                prefix='target'
-            )
-            for k in ['status', 'conversation', 'generation', 'truncation_mode']:
-                batch_element[k] = batch[k][i]
-            updated_batch.append(batch_element)
-        
-        for i in range(len(updated_batch)):
-            updated_batch[i].update(self.train_iterator.tokenize_batch_element(
-                updated_batch[i]['prompt'], 
-                [{"role": "assistant", "content": completions[i]}], 
-                'keep_start',
-                prefix='KL'
-            ))
-        
-        updated_batch = self.train_iterator.collate(updated_batch)
-        assert batch.keys() == updated_batch.keys()
-        assert type(batch) == type(updated_batch)
-        for k in batch.keys():
-            assert type(batch[k]) == type(updated_batch[k])
-            assert type(batch[k][0]) == type(updated_batch[k][0])
-        del batch
-        
-        return updated_batch
+                delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
 
-    def label(self, reward_model, prompt: str):
-
-        """
-        Args:
-            model: the reward model to label data with. 
-            prompt: the prompt
-            
-        Returns:
-            Reward labels from the model.
-        """
-        pass
+                if accumulated >= self.config.model.gradient_accumulation_steps:
+                    self.free_memory()
+                    accumulated = 0
 
 
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
@@ -536,30 +458,131 @@ class BasicTrainer(object):
         """
         Update the reference model to have the policy weights.
         """
-        try:
-            self.policy.eval()
-            self.reference_model.eval()
-            
-            state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
+        state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
+        self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
+        self.accelerator.wait_for_everyone()
 
-            self.accelerator.print("Policy model parameter shapes:")
-            for name, param in self.policy.named_parameters():
-                self.accelerator.print(f"{name}: {param.shape}")
+    def sample(self, model, prompt: str, temp: float=0.7):
+        """
+        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
+        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
+        model with the policy via sync_reference_with_policy, then sample from reference model.
+        Args:
+            model: the model to sample from (the reference model in most cases)
+            prompt: the prompt
+            temp: temperature for sampling
+        Returns:
+            Completion for the prompt.
+        """
+        generation_config = GenerationConfig(
+            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
+            do_sample=True,
+            temperature=temp,
+            num_return_sequences=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+        prompt_inputs = self.train_iterator.tokenize_batch_element(
+            [{"role": "user", "content" : prompt}], 
+            [{"role": "assistant", "content": ""}], 
+            'keep_start'
+        )
+        input_ids = torch.LongTensor(prompt_inputs['prompt_input_ids']).unsqueeze(0).to(self.accelerator.device)
+        model.eval()
+        if self.accelerator.state.fsdp_plugin is not None:
+            context = FSDP.summon_full_params(model)
+        else:
+            context = nullcontext
+        with context:
+            with torch.no_grad():
+                prompt_completion_ids = model.generate(input_ids, generation_config=generation_config)
+                prompt_length = len(prompt_inputs["prompt_input_ids"])
+                completion_ids = prompt_completion_ids[:, prompt_length:]
+                completion = self.tokenizer.decode(completion_ids[0,:].tolist(), skip_special_tokens=True)
+        
+        return completion
 
-            self.accelerator.print("Reference model parameter shapes before syncing:")
-            for name, param in self.reference_model.named_parameters():
-                self.accelerator.print(f"{name}: {param.shape}")
-            
-            self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
-            self.accelerator.wait_for_everyone()
-            
-            self.accelerator.print("Reference model parameter shapes after syncing:")
-            for name, param in self.reference_model.named_parameters():
-                self.accelerator.print(f"{name}: {param.shape}")
+    def batch_sample(self, model, batch: Dict, temp: float=0.7):
+        """
+        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
+        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
+        model with the policy via sync_reference_with_policy, then sample from reference model.
 
-        except Exception as e:
-            logger.error(f"Error during sync_reference_with_policy: {e}")
-            raise
+        Args:
+            model: the model to sample from (the reference model in most cases)
+            batch: the sample batch returned from the iterative data loader
+            temp: temperature for sampling
+
+        Returns:
+            Completions for all samples in the batch.
+        """
+        generation_config = GenerationConfig(
+            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
+            do_sample=True,
+            temperature=temp,
+            num_return_sequences=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+        
+        batch_elements = [
+            self.train_iterator.tokenize_batch_element(
+                            [{"role": "user", "content" : prompt}], 
+                            [{"role": "assistant", "content": ""}], 
+                            'keep_start'
+                        ) for prompt in batch['prompt_text']
+        ]
+        batch_elements = self.train_iterator.collate(batch_elements)
+        batch_input_ids = batch_elements['prompt_input_ids'].to(self.accelerator.device)
+        max_prompt_length = max(len(seq) for seq in batch_input_ids)
+        
+        model.eval()
+
+        if self.accelerator.state.fsdp_plugin is not None:
+            context = FSDP.summon_full_params(model)
+        else:
+            context = nullcontext
+
+        with context:
+            with torch.no_grad():
+                batch_completion_ids = model.generate(batch_input_ids, generation_config=generation_config)
+                batch_completion_ids = batch_completion_ids[:, max_prompt_length:]
+                batch_completions = self.tokenizer.batch_decode(batch_completion_ids, skip_special_tokens=True)
+                
+        return batch_completions
+
+    def update_batch(self, batch: Dict, completions: List[str]):
+        
+        """
+        Args:
+            batch: the original offline batch
+            completions: the online generations from the updated reference model (after syncing weights with policy model)
+            
+        Returns:
+            updated_batch: the updated online batch
+        """
+        updated_batch = []
+        for i, prompt in enumerate(batch['prompt']):
+            batch_element = self.train_iterator.tokenize_batch_element(
+                prompt, 
+                [{"role": "assistant", "content": completions[i]}], 
+                'keep_start',
+                prefix='target'
+            )
+            for k in ['status', 'conversation', 'generation', 'truncation_mode']:
+                batch_element[k] = batch[k][i]
+            updated_batch.append(batch_element)
+        
+        for i in range(len(updated_batch)):
+            updated_batch[i].update(self.train_iterator.tokenize_batch_element(
+                updated_batch[i]['prompt'], 
+                [{"role": "assistant", "content": completions[i]}], 
+                'keep_start',
+                prefix='KL'
+            ))
+        
+        updated_batch = self.train_iterator.collate(updated_batch)
+        delete_dicts(batch)
+        
+        return updated_batch
 
     def free_memory(self):
         torch.cuda.empty_cache()

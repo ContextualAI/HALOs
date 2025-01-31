@@ -21,17 +21,12 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn.functional as F
 import torch.nn as nn
-from torch.nn.utils.rnn import pad_sequence
 import transformers
 import gc
 from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, AutoModelForBradleyTerry
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer, GenerationConfig
 from accelerate import Accelerator
-from argparse import Namespace
-# import train.sample as sampling_module
-from vllm import LLM, SamplingParams
-import label as labeling_module
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import torch.distributed as dist
@@ -59,19 +54,6 @@ import time
 import json
 from typing import Optional, Dict, List, Union, Tuple
 from contextlib import nullcontext
-
-import logging
-
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("trainer_debug.log")
-    ]
-)
-
-logger = logging.getLogger(__name__)
 
 
 class BasicTrainer(object):
@@ -108,9 +90,7 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
-        self.policy_online = bool(config.model.policy_online)
-        self.policy_online_update_steps = config.model.policy_online_update_steps
-
+        
         self.reference_model = reference_model
         self.train_iterator = train_iterator
         self.eval_iterator = eval_iterator
@@ -462,7 +442,7 @@ class BasicTrainer(object):
         self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
         self.accelerator.wait_for_everyone()
 
-    def sample(self, model, prompt: str, temp: float=0.7):
+    def sample(self, model, prompt: str, temp: float=0.7) -> str:
         """
         Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
         directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
@@ -501,7 +481,7 @@ class BasicTrainer(object):
         
         return completion
 
-    def batch_sample(self, model, batch: Dict, temp: float=0.7):
+    def batch_sample(self, model, batch: Dict[str, torch.LongTensor, torch.FloatTensor], temp: float=0.7) -> List[str]:
         """
         Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
         directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
@@ -549,7 +529,7 @@ class BasicTrainer(object):
                 
         return batch_completions
 
-    def update_batch(self, batch: Dict, completions: List[str]):
+    def update_batch(self, batch: Dict[str, torch.LongTensor, torch.FloatTensor], completions: List[str]) -> Dict[str, torch.LongTensor, torch.FloatTensor]:
         
         """
         Args:

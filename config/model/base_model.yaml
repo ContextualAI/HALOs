@@ -18,12 +18,6 @@ block_name: null
 # the dtype for the policy parameters/optimizer state
 policy_dtype: bfloat16
 
-# if online policy is enabled
-policy_online: true
-
-# the number of steps required for each policy update
-policy_online_update_steps: 32
-
 # the dtype for the reference model (which is used for inference only)
 reference_dtype: bfloat16
 

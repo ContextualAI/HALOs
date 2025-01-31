@@ -12,7 +12,7 @@ debug: false
 
 # wandb configuration
 wandb:
-  enabled: false
+  enabled: true
   entity: null
   project: "halos"
 
@@ -71,7 +71,7 @@ cache_reference_logprobs: false
 load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
-humanline: true
+humanline: false
 
 # gamma in capacity function
 humanline_alpha: 1.50

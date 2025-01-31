@@ -71,8 +71,7 @@ peft:
 
 # auxiliary reward model (e.g., for PPO)
 reward_model:
-  # path: null
-  path: /scratch/gpfs/sl2998/models/llama3-8B-reward/FINAL
+  path: null
   model_class: AutoModelForBradleyTerry
   dtype: float32
   attn_implementation: flash_attention_2

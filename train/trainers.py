@@ -481,7 +481,7 @@ class BasicTrainer(object):
         
         return completion
 
-    def batch_sample(self, model, batch: Dict[str, torch.LongTensor], temp: float=0.7) -> List[str]:
+    def batch_sample(self, model, batch: Dict[str, Union[List, torch.LongTensor]], temp: float=0.7) -> List[str]:
         """
         Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
         directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
@@ -529,7 +529,7 @@ class BasicTrainer(object):
                 
         return batch_completions
 
-    def update_batch(self, batch: Dict[str, torch.LongTensor], completions: List[str]) -> Dict[str, torch.LongTensor, torch.FloatTensor]:
+    def update_batch(self, batch: Dict[str, Union[List, torch.LongTensor]], completions: List[str]) -> Dict[str, Union[List, torch.LongTensor]]:
         
         """
         Args:

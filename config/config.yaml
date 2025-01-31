@@ -71,7 +71,7 @@ cache_reference_logprobs: false
 load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
-humanline: false
+humanline: true
 
 # gamma in capacity function
 humanline_alpha: 1.50
@@ -79,7 +79,7 @@ humanline_alpha: 1.50
 ## DATALOADER SETTINGS
 
 # what fraction of undesirable data should be kept
-# e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away
+# e.g., if this is 0.8, then a random 20% of the undesirable examples (x, y_undesirable) should be thrown away
 # this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
 frac_unique_desirable: 1.0
 

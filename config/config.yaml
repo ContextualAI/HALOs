@@ -40,6 +40,8 @@ defaults:
 # the trainer class to use (e.g. BasicTrainer, FSDPTrainer, TensorParallelTrainer); should be specfied by the loss config
 trainer: BasicTrainer
 
+template_tokens: []
+
 
 ## TRAINING SETTINGS
 

@@ -116,6 +116,10 @@ def main(config: DictConfig):
 
         accelerator.print("Default chat template set.")
 
+    for token in config.get("template_tokens"):
+        if token not in tokenizer.vocab:
+            special_tokens.append(token)
+
     control_tokens = list(config.loss.get("control_tokens", {}).values())
     special_tokens.extend(control_tokens)
 

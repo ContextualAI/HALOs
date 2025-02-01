@@ -27,10 +27,10 @@ from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, Aut
 from omegaconf import OmegaConf, DictConfig
 from transformers import AutoTokenizer, GenerationConfig
 from accelerate import Accelerator
-import pdb
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import torch.distributed as dist
+
 
 from . import dataloader
 from .utils import (
@@ -90,7 +90,7 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
-
+        
         self.reference_model = reference_model
         self.train_iterator = train_iterator
         self.eval_iterator = eval_iterator
@@ -111,7 +111,7 @@ class BasicTrainer(object):
         self.policy, self.reference_model, self.optimizer, self.scheduler = self.accelerator.prepare(
             self.policy,
             self.reference_model,
-            self.optimizer, 
+            self.optimizer,
             self.scheduler
         )
 
@@ -203,11 +203,43 @@ class BasicTrainer(object):
         """
         raise NotImplementedError
 
+    def get_reward_scores(self, batch: Dict[str, torch.LongTensor]) -> torch.FloatTensor:
+        """Get reward scores from reward model.
+        
+        Args:
+            batch: Dictionary containing batch data
+            
+        Returns:
+            torch.FloatTensor of shape (microbatch_size,) containing reward scores
+        """
+        if self.reward_model is not None:
+            # Decode the sequences using policy tokenizer
+            sequences = self.tokenizer.batch_decode(batch['target_combined_input_ids'], skip_special_tokens=True)
+            # Encode with reward model tokenizer
+            reward_inputs = self.reward_tokenizer(
+                sequences,
+                padding=True,
+                truncation=True,
+                return_tensors='pt',
+                max_length=self.config.model.max_length
+            ).to(self.accelerator.device)
+
+            with torch.no_grad():
+                # Get reward model scores
+                outputs = self.reward_model(reward_inputs['input_ids'], attention_mask=reward_inputs['attention_mask'])
+                # Use the positive class logit as the reward score
+                reward_scores = outputs.logits[:, 1]
+        else:
+            # Use binary labels (1 for chosen, -1 for rejected)
+            reward_scores = torch.tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(len(batch['status']))])
+
+        return reward_scores
+
     def eval(self) -> Dict[str, Dict]:
         """
         Run evaluation on all the examples in the test data and return the metrics from get_batch_metrics.
         This is close-ended evaluation and measures the performance of a single model on a single dataset. 
-        It does not compare two models to eacch other.
+        It does not compare two models to each other.
 
         Returns:
             A dict of form:
@@ -255,9 +287,8 @@ class BasicTrainer(object):
 
     def train(self):
         """Begin either SFT or HALO training, with periodic evaluation. This is subclassed when implementing PPO."""
-
         self.accelerator.print(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
-        
+
         if self.reference_model is not None:
             self.reference_model.eval()
 
@@ -287,7 +318,18 @@ class BasicTrainer(object):
 
             if self.config.humanline:
                 self.sync_reference_with_policy()
-
+                completions = self.batch_sample(self.reference_model, batch)
+                batch = self.update_batch(batch, completions)
+            
+            if self.reward_model is not None:
+                scores = self.get_reward_scores(batch).to(self.policy_dtype).to(self.accelerator.device)
+                masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype).to(self.accelerator.device)
+                rewards = torch.zeros_like(masks)
+                for row in range(rewards.shape[0]):
+                    rewards[row, masks[row].nonzero()[-1]] += scores[row]
+                rewards = rewards * masks
+                batch['rewards'] = rewards
+            
             # TRAINING
             self.policy.train()
             accumulated = 0
@@ -297,7 +339,7 @@ class BasicTrainer(object):
                 batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 loss, metrics = self.get_batch_metrics(batch)
                 self.accelerator.backward(loss)
-
+            
                 for k, v in metrics.items():
                     batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
@@ -307,37 +349,38 @@ class BasicTrainer(object):
                 self.scheduler.step()
                 self.optimizer.zero_grad()
                 accumulated += 1
+                
+                step_time = time.time() - start_time
+                examples_per_second = self.config.model.batch_size / step_time
+                batch_metrics['examples_per_second'].append(examples_per_second)
+                
+                self.batch_counter += 1
+                self.example_counter += self.config.model.batch_size
 
-            step_time = time.time() - start_time
-            examples_per_second = self.config.model.batch_size / step_time
-            batch_metrics['examples_per_second'].append(examples_per_second)
-            
-            self.batch_counter += 1
-            self.example_counter += self.config.model.batch_size
+                if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
+                    mean_train_metrics = {}
+                    for k, v in batch_metrics.items():
+                        if len(v) > 0:
+                            mean_train_metrics[k] = sum(v) / len(v)
 
-            if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
-                mean_train_metrics = {}
-                for k, v in batch_metrics.items():
-                    if len(v) > 0:
-                        mean_train_metrics[k] = sum(v) / len(v)
+                    mean_train_metrics['counters/examples'] = self.example_counter
+                    mean_train_metrics['counters/updates'] = self.batch_counter
+                    self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
 
-                mean_train_metrics['counters/examples'] = self.example_counter
-                mean_train_metrics['counters/updates'] = self.batch_counter
-                self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
+                    if self.config.wandb.enabled and self.accelerator.is_main_process:
+                        wandb.log(mean_train_metrics, step=self.example_counter)
 
-                if self.config.wandb.enabled and self.accelerator.is_main_process:
-                    wandb.log(mean_train_metrics, step=self.example_counter)
+                    last_log = time.time()
+                    batch_metrics = defaultdict(list)
+                else:
+                    self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-                last_log = time.time()
-                batch_metrics = defaultdict(list)
-            else:
-                self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+                delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
 
-            delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
+                if accumulated >= self.config.model.gradient_accumulation_steps:
+                    self.free_memory()
+                    accumulated = 0
 
-            if accumulated >= self.config.model.gradient_accumulation_steps:
-                self.free_memory()
-                accumulated = 0
 
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
@@ -399,17 +442,15 @@ class BasicTrainer(object):
         self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
         self.accelerator.wait_for_everyone()
 
-    def sample(self, model, prompt: str, temp: float=0.7):
+    def sample(self, model, prompt: str, temp: float=0.7) -> str:
         """
         Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
         directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
         model with the policy via sync_reference_with_policy, then sample from reference model.
-
         Args:
             model: the model to sample from (the reference model in most cases)
             prompt: the prompt
             temp: temperature for sampling
-
         Returns:
             Completion for the prompt.
         """
@@ -420,14 +461,59 @@ class BasicTrainer(object):
             num_return_sequences=1,
             pad_token_id=self.tokenizer.pad_token_id,
         )
-
         prompt_inputs = self.train_iterator.tokenize_batch_element(
             [{"role": "user", "content" : prompt}], 
             [{"role": "assistant", "content": ""}], 
             'keep_start'
         )
         input_ids = torch.LongTensor(prompt_inputs['prompt_input_ids']).unsqueeze(0).to(self.accelerator.device)
+        model.eval()
+        if self.accelerator.state.fsdp_plugin is not None:
+            context = FSDP.summon_full_params(model)
+        else:
+            context = nullcontext
+        with context:
+            with torch.no_grad():
+                prompt_completion_ids = model.generate(input_ids, generation_config=generation_config)
+                prompt_length = len(prompt_inputs["prompt_input_ids"])
+                completion_ids = prompt_completion_ids[:, prompt_length:]
+                completion = self.tokenizer.decode(completion_ids[0,:].tolist(), skip_special_tokens=True)
+        
+        return completion
 
+    def batch_sample(self, model, batch: Dict[str, Union[List, torch.LongTensor]], temp: float=0.7) -> List[str]:
+        """
+        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
+        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
+        model with the policy via sync_reference_with_policy, then sample from reference model.
+
+        Args:
+            model: the model to sample from (the reference model in most cases)
+            batch: the sample batch returned from the iterative data loader
+            temp: temperature for sampling
+
+        Returns:
+            Completions for all samples in the batch.
+        """
+        generation_config = GenerationConfig(
+            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
+            do_sample=True,
+            temperature=temp,
+            num_return_sequences=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+        
+        batch_elements = [
+            self.train_iterator.tokenize_batch_element(
+                            [{"role": "user", "content" : prompt}], 
+                            [{"role": "assistant", "content": ""}], 
+                            'keep_start'
+                        ) for prompt in batch['prompt_text']
+        ]
+        batch_elements = self.train_iterator.collate(batch_elements)
+        batch_input_ids = batch_elements['prompt_input_ids'].to(self.accelerator.device)
+        max_prompt_length = max(len(seq) for seq in batch_input_ids)
+        
         model.eval()
 
         if self.accelerator.state.fsdp_plugin is not None:
@@ -437,12 +523,46 @@ class BasicTrainer(object):
 
         with context:
             with torch.no_grad():
-                prompt_completion_ids = model.generate(input_ids, generation_config=generation_config)
-                prompt_length = len(prompt_inputs["prompt_input_ids"])
-                completion_ids = prompt_completion_ids[:, prompt_length:]
-                completion = self.tokenizer.decode(completion_ids[0,:].tolist(), skip_special_tokens=True)
+                batch_completion_ids = model.generate(batch_input_ids, generation_config=generation_config)
+                batch_completion_ids = batch_completion_ids[:, max_prompt_length:]
+                batch_completions = self.tokenizer.batch_decode(batch_completion_ids, skip_special_tokens=True)
+                
+        return batch_completions
+
+    def update_batch(self, batch: Dict[str, Union[List, torch.LongTensor]], completions: List[str]) -> Dict[str, Union[List, torch.LongTensor]]:
         
-        return completion
+        """
+        Args:
+            batch: the original offline batch
+            completions: the online generations from the updated reference model (after syncing weights with policy model)
+            
+        Returns:
+            updated_batch: the updated online batch
+        """
+        updated_batch = []
+        for i, prompt in enumerate(batch['prompt']):
+            batch_element = self.train_iterator.tokenize_batch_element(
+                prompt, 
+                [{"role": "assistant", "content": completions[i]}], 
+                'keep_start',
+                prefix='target'
+            )
+            for k in ['status', 'conversation', 'generation', 'truncation_mode']:
+                batch_element[k] = batch[k][i]
+            updated_batch.append(batch_element)
+        
+        for i in range(len(updated_batch)):
+            updated_batch[i].update(self.train_iterator.tokenize_batch_element(
+                updated_batch[i]['prompt'], 
+                [{"role": "assistant", "content": completions[i]}], 
+                'keep_start',
+                prefix='KL'
+            ))
+        
+        updated_batch = self.train_iterator.collate(updated_batch)
+        delete_dicts(batch)
+        
+        return updated_batch
 
     def free_memory(self):
         torch.cuda.empty_cache()
@@ -708,7 +828,6 @@ class SimPOTrainer(PairedPreferenceTrainer):
         # implicit reference model that assigns probability 1 (logp = 0) to all tokens
         chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, torch.zeros_like(policy_chosen_logps).to(self.accelerator.device), length_normalized=True)
         rejected_rewards = self.get_sequence_rewards(policy_rejected_logps, torch.zeros_like(policy_rejected_logps).to(self.accelerator.device), length_normalized=True)
-        
         losses = -F.logsigmoid(self.config.loss.beta * (chosen_rewards - rejected_rewards - self.config.loss.gamma_beta_ratio))
 
         return losses, chosen_rewards.detach(), rejected_rewards.detach()
@@ -860,40 +979,56 @@ class KTOTrainer(UnpairedPreferenceTrainer):
     def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
+        try:
+            self.accelerator.print(f"config.cache_reference_logprobs: {self.config.cache_reference_logprobs}")
+            
+            def _check_fsdp_root(module):
+                for name, child in module.named_children():
+                    if isinstance(child, FSDP):
+                        print(f"{name}: _is_root = {child._is_root}")
+                    else:
+                        print("not fsdp")
+            _check_fsdp_root(self.policy)
+            _check_fsdp_root(self.reference_model)
+            _check_fsdp_root(self.reward_model)
+                        
+            policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
+            with torch.no_grad():
+                
+                reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
+            
+            losses, chosen_rewards, rejected_rewards, KL = self.loss(
+                batch,
+                policy_chosen_logps,
+                policy_rejected_logps,
+                policy_KL_logps,
+                reference_chosen_logps,
+                reference_rejected_logps,
+                reference_KL_logps,
+            )
 
-        policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
-        with torch.no_grad():
-            reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
-        
-        losses, chosen_rewards, rejected_rewards, KL = self.loss(
-            batch,
-            policy_chosen_logps,
-            policy_rejected_logps,
-            policy_KL_logps,
-            reference_chosen_logps,
-            reference_rejected_logps,
-            reference_KL_logps,
-        )
+            combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
+            combined_statuses = torch.Tensor([1] * len(chosen_rewards) + [0] * len(rejected_rewards)).to(self.accelerator.device)
 
-        combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
-        combined_statuses = torch.Tensor([1] * len(chosen_rewards) + [0] * len(rejected_rewards)).to(self.accelerator.device)
+            all_rewards = self.accelerator.gather(combined_rewards)
+            all_statuses = self.accelerator.gather(combined_statuses)
+            all_KL = self.accelerator.gather(KL)
+            chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
+            rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
 
-        all_rewards = self.accelerator.gather(combined_rewards)
-        all_statuses = self.accelerator.gather(combined_statuses)
-        all_KL = self.accelerator.gather(KL)
-        chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
-        rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
+            metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
+            metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
+            metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
+            metrics[f'rewards_{mode}/KL_estimate'] = all_KL
+            metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
-        metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
-        metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
-        metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
-        metrics[f'rewards_{mode}/KL_estimate'] = all_KL
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
+            del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
+            del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
-        del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
-        del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
-
-        return losses.sum(), metrics
+            return losses.sum(), metrics
+        except:
+            self.accelerator.print("get_batch_metrics is not okay")
+            import pdb; pdb.set_trace()
 
 
 class PPOTrainer(BasicTrainer):
@@ -1416,4 +1551,3 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
 
         return losses.sum(), metrics
-        

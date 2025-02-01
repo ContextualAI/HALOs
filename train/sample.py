@@ -66,7 +66,7 @@ def main(args):
     tokenizer.chat_template = open('config/template.jinja').read()
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
-
+    
     sampling_params = SamplingParams(
         temperature=args.temperature,
         top_p=args.top_p,
@@ -143,6 +143,6 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples_per_prompt", type=int, default=1, help="Number of samples to generate per input")
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
     parser.add_argument("--mode", type=str, default="alpacaeval", help="mode")
-  
+
     args = parser.parse_args()
     main(args)

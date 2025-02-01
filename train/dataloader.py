@@ -532,7 +532,7 @@ def get_ultrachat(split: str) -> Dataset:
 class DataLoader:
     """
     The base data loader class, similar to the one from the DPO repo.
-    Subclass this and overwrite the __iter__ method as needed, since the batcch elements will be different depending
+    Subclass this and overwrite the __iter__ method as needed, since the batch elements will be different depending
     on whether you're doing SFT, aligning with a pairwise loss like DPO, or alignment with an unpaired loss like KTO. 
     """
     def __init__(self, 
@@ -1139,7 +1139,7 @@ class PairedPreferenceDataLoader(DataLoader):
 
         self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
         flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
-         
+        
         epoch_idx = 0
         example_idx = 0
         done = False

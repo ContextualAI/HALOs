@@ -460,7 +460,6 @@ class BasicTrainer(object):
             batch_element = self.train_iterator.tokenize_batch_element(
                 [{"role": "user", "content" : prompt}], 
                 [{"role": "assistant", "content": ""}], 
-                'keep_start'
             )
             batch_elements.append(batch_element)
 
@@ -500,10 +499,9 @@ class BasicTrainer(object):
             batch_element = self.train_iterator.tokenize_batch_element(
                 prompt, 
                 [{"role": "assistant", "content": completions[i]}], 
-                'keep_start',
                 prefix='target'
             )
-            for k in ['status', 'conversation', 'generation', 'truncation_mode']:
+            for k in ['status', 'conversation', 'generation']:
                 batch_element[k] = batch[k][i]
             updated_batch.append(batch_element)
         
@@ -511,7 +509,6 @@ class BasicTrainer(object):
             updated_batch[i].update(self.train_iterator.tokenize_batch_element(
                 updated_batch[i]['prompt'], 
                 [{"role": "assistant", "content": completions[i]}], 
-                'keep_start',
                 prefix='KL'
             ))
         

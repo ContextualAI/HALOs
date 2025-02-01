@@ -45,7 +45,6 @@ class Example:
     scores: List[float] = field(default_factory=list)           # score for each generation
     pairs: List[Tuple[int, int]] = field(default_factory=list)  # for preference feedback data: indices in responses, where i > j in pair (i,j) is a preference
     desirable: List[bool] = field(default_factory=list)         # for binary feedback data: whether the generation at the corresponding index in self.generations is desirable 
-    truncation_mode: str = 'keep_end'                           # if truncation needed, keep the beginning (keep_start) or end (keep_end) (only override default for SHP)
     dataset_name: str = ''
     original_prompt: str = ''                                   # the unformatted prompt (needed to recover instruction for AlpacaEval)
 
@@ -285,7 +284,6 @@ def get_shp(split: str, seed: int=0) -> Dataset:
         data[row['history']].generations.append([{"role": "assistant", "content": row['human_ref_B']}])
         data[row['history']].pairs.append((i, j) if row['labels'] == 1 else (j, i))
         data[row['history']].scores.extend(scores)
-        data[row['history']].truncation_mode = 'keep_start'  # keep start for SHP because it's single-turn with long prompts
         data[row['history']].sft_index = 0  # absolute best response cannot be inferred, so just pick the first
         data[row['history']].dataset_name = 'shp'
         data[row['history']].remove_extra_spaces()
@@ -474,7 +472,6 @@ def get_ultrabin(split: str) -> Dataset:
         data[key].pairs.append((i, j))
         data[key].sft_index = i  # The chosen response is the SFT target
         data[key].dataset_name = data.name
-        data[key].truncation_mode = 'keep_start'
         data[key].remove_extra_spaces()
 
     return data
@@ -503,7 +500,6 @@ def get_ultrafeedback_armorm(split: str) -> Dataset:
         data[key].pairs.append((i, j))
         data[key].sft_index = i  # The chosen response is the SFT target
         data[key].dataset_name = data.name
-        data[key].truncation_mode = 'keep_start'
         data[key].remove_extra_spaces()
 
     return data
@@ -523,7 +519,6 @@ def get_ultrachat(split: str) -> Dataset:
         data[key].generations.append(row["messages"][1:])
         data[key].sft_index = 0 
         data[key].dataset_name = data.name
-        data[key].truncation_mode = 'keep_start'
         data[key].remove_extra_spaces()
 
     return data
@@ -640,7 +635,7 @@ class DataLoader:
 
         return padded_batch
 
-    def tokenize_batch_element(self, conversation: List[Dict[str, str]], generation: List[Dict[str, str]], truncation_mode: str, prefix: str='target') -> Dict:
+    def tokenize_batch_element(self, conversation: List[Dict[str, str]], generation: List[Dict[str, str]], prefix: str='target') -> Dict:
         """
         Tokenize a single batch element and truncate if prompt + generation is too long. Batch element is turned into Pytorch 
         tensors in self.collate. Create the labels for the generation, which are of length equal to the sum of the length of 
@@ -649,7 +644,6 @@ class DataLoader:
         Args:
         - conversation: list of previous turns, each resembling dict {"role": "assistant", "content": generation}
         - generation: list of current turns, each resembling dict {"role": "assistant", "content": generation}
-        - truncation_mode: one of 'keep_start'/'keep_end' (truncate end/beginning of prompt respectively)
         - prefix: the prefix corresponding to the generation (e.g., 'chosen', 'rejected', 'target')
 
         Returns:
@@ -787,7 +781,6 @@ class SFTDataLoader(DataLoader):
                 batch_element = self.tokenize_batch_element(
                     conversation,
                     target_generation,
-                    example.truncation_mode
                 )
                 batch_element['original_prompt'] = example.original_prompt
                 batch.append(batch_element)
@@ -894,7 +887,6 @@ class ConditionalSFTDataLoader(DataLoader):
                 batch_element = self.tokenize_batch_element(
                     conversation,
                     conditioned_generation,
-                    example.truncation_mode
                 )
                 batch_element['status'] = status
                 batch.append(batch_element)
@@ -1010,9 +1002,8 @@ class UnpairedPreferenceDataLoader(DataLoader):
             example_queue = []
 
             for example, generation, status in flat_data:
-                batch_element = self.tokenize_batch_element(example.prompt, generation, example.truncation_mode, prefix='target')
+                batch_element = self.tokenize_batch_element(example.prompt, generation, prefix='target')
                 batch_element['status'] = status 
-                batch_element['truncation_mode'] = example.truncation_mode
                 batch_element['conversation'] = example.prompt
                 batch_element['generation'] = generation
                 example_queue.append(batch_element)
@@ -1030,7 +1021,6 @@ class UnpairedPreferenceDataLoader(DataLoader):
                         batch[i].update(self.tokenize_batch_element(
                             batch[i]['conversation'],
                             batch[indices[i]]['generation'],
-                            batch[i]['truncation_mode'],
                             prefix='KL'
                         ))
 
@@ -1154,8 +1144,8 @@ class PairedPreferenceDataLoader(DataLoader):
 
             for example, (i, j) in flat_data:
                 batch_element = {}
-                batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], example.truncation_mode, prefix='chosen'))
-                batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], example.truncation_mode, prefix='rejected'))
+                batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], prefix='chosen'))
+                batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], prefix='rejected'))
                 batch.append(batch_element)
 
                 if len(batch) >= self.microbatch_size:

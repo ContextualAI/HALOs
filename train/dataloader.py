@@ -640,7 +640,7 @@ class DataLoader:
 
         return padded_batch
 
-    def tokenize_batch_element(self, conversation: List[Dict[str, str]], generation: str, truncation_mode: str, prefix: str='target') -> Dict:
+    def tokenize_batch_element(self, conversation: List[Dict[str, str]], generation: List[Dict[str, str]], truncation_mode: str, prefix: str='target') -> Dict:
         """
         Tokenize a single batch element and truncate if prompt + generation is too long. Batch element is turned into Pytorch 
         tensors in self.collate. Create the labels for the generation, which are of length equal to the sum of the length of 
@@ -677,6 +677,7 @@ class DataLoader:
             else:
                 total_length += templated_length
 
+        untruncated_conversation = conversation
         conversation = conversation[:(i+1)]
 
         # truncate the generation if necessary 
@@ -704,10 +705,12 @@ class DataLoader:
 
         # Prepare the batch element
         batch_element = {
+            'untruncated_conversation': untruncated_conversation,
             'prompt': conversation,
             f'{prefix}': generation,
             'prompt_text': untruncated_prompt_string,
             'prompt_input_ids': tokenized_prompt,
+            'prompt_attention_mask': [1] * len(tokenized_prompt),
             f'{prefix}_text': self.tokenizer.apply_chat_template(generation, tokenize=False),
             f'{prefix}_combined_text': tokenized_prompt_and_generation_string,
             f'{prefix}_combined_input_ids': tokenized_prompt_and_generation,
@@ -724,7 +727,7 @@ class DataLoader:
         batch_element[f'{prefix}_labels'] = labels
 
         return batch_element
-
+    
     def __iter__(self):
         """Create a flat version of the data and yield batches."""
         raise NotImplementedError

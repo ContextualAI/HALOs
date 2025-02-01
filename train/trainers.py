@@ -318,17 +318,6 @@ class BasicTrainer(object):
 
             if self.config.humanline:
                 self.sync_reference_with_policy()
-                completions = self.batch_sample(self.reference_model, batch)
-                batch = self.update_batch(batch, completions)
-            
-            if self.reward_model is not None:
-                scores = self.get_reward_scores(batch).to(self.policy_dtype).to(self.accelerator.device)
-                masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype).to(self.accelerator.device)
-                rewards = torch.zeros_like(masks)
-                for row in range(rewards.shape[0]):
-                    rewards[row, masks[row].nonzero()[-1]] += scores[row]
-                rewards = rewards * masks
-                batch['rewards'] = rewards
             
             # TRAINING
             self.policy.train()
@@ -442,14 +431,17 @@ class BasicTrainer(object):
         self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
         self.accelerator.wait_for_everyone()
 
-    def sample(self, model, prompt: str, temp: float=0.7) -> str:
+    def sample(self, model, batch: Dict[str, Union[List, torch.LongTensor]], temp: float=0.7) -> str:
         """
         Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
         directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
-        model with the policy via sync_reference_with_policy, then sample from reference model.
+        model with the policy via sync_reference_with_policy, then sample from reference model. If you are 
+        inserting this back into the dataloader, remember that the generation should be in the format 
+        { "role": "assistant", "content": x }.
+        
         Args:
             model: the model to sample from (the reference model in most cases)
-            prompt: the prompt
+            batch: the sample batch returned from a data loader
             temp: temperature for sampling
         Returns:
             Completion for the prompt.
@@ -461,59 +453,17 @@ class BasicTrainer(object):
             num_return_sequences=1,
             pad_token_id=self.tokenizer.pad_token_id,
         )
-        prompt_inputs = self.train_iterator.tokenize_batch_element(
-            [{"role": "user", "content" : prompt}], 
-            [{"role": "assistant", "content": ""}], 
-            'keep_start'
-        )
-        input_ids = torch.LongTensor(prompt_inputs['prompt_input_ids']).unsqueeze(0).to(self.accelerator.device)
-        model.eval()
-        if self.accelerator.state.fsdp_plugin is not None:
-            context = FSDP.summon_full_params(model)
-        else:
-            context = nullcontext
-        with context:
-            with torch.no_grad():
-                prompt_completion_ids = model.generate(input_ids, generation_config=generation_config)
-                prompt_length = len(prompt_inputs["prompt_input_ids"])
-                completion_ids = prompt_completion_ids[:, prompt_length:]
-                completion = self.tokenizer.decode(completion_ids[0,:].tolist(), skip_special_tokens=True)
         
-        return completion
+        batch_elements = []
 
-    def batch_sample(self, model, batch: Dict[str, Union[List, torch.LongTensor]], temp: float=0.7) -> List[str]:
-        """
-        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
-        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
-        model with the policy via sync_reference_with_policy, then sample from reference model.
+        for prompt in batch['prompt_text']:
+            batch_element = self.train_iterator.tokenize_batch_element(
+                [{"role": "user", "content" : prompt}], 
+                [{"role": "assistant", "content": ""}], 
+                'keep_start'
+            )
+            batch_elements.append(batch_element)
 
-        Args:
-            model: the model to sample from (the reference model in most cases)
-            batch: the sample batch returned from the iterative data loader
-            temp: temperature for sampling
-
-        Returns:
-            Completions for all samples in the batch.
-        """
-        generation_config = GenerationConfig(
-            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
-            do_sample=True,
-            temperature=temp,
-            num_return_sequences=1,
-            pad_token_id=self.tokenizer.pad_token_id,
-        )
-        
-        batch_elements = [
-            self.train_iterator.tokenize_batch_element(
-                            [{"role": "user", "content" : prompt}], 
-                            [{"role": "assistant", "content": ""}], 
-                            'keep_start'
-                        ) for prompt in batch['prompt_text']
-        ]
-        batch_elements = self.train_iterator.collate(batch_elements)
-        batch_input_ids = batch_elements['prompt_input_ids'].to(self.accelerator.device)
-        max_prompt_length = max(len(seq) for seq in batch_input_ids)
-        
         model.eval()
 
         if self.accelerator.state.fsdp_plugin is not None:
@@ -523,10 +473,16 @@ class BasicTrainer(object):
 
         with context:
             with torch.no_grad():
-                batch_completion_ids = model.generate(batch_input_ids, generation_config=generation_config)
-                batch_completion_ids = batch_completion_ids[:, max_prompt_length:]
+                batch_elements = self.train_iterator.collate(batch_elements)
+                batch_completion_ids = model.generate(
+                    batch_elements['prompt_input_ids'].to(self.accelerator.device), 
+                    attention_mask=batch_elements['prompt_attention_mask'].to(self.accelerator.device),
+                    generation_config=generation_config
+                )
+                # truncate prompt
+                batch_completion_ids = [ x[len(batch_elements['prompt_input_ids'][i]):] for i,x in enumerate(batch_completion_ids) ]
                 batch_completions = self.tokenizer.batch_decode(batch_completion_ids, skip_special_tokens=True)
-                
+        
         return batch_completions
 
     def update_batch(self, batch: Dict[str, Union[List, torch.LongTensor]], completions: List[str]) -> Dict[str, Union[List, torch.LongTensor]]:
@@ -979,56 +935,40 @@ class KTOTrainer(UnpairedPreferenceTrainer):
     def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
-        try:
-            self.accelerator.print(f"config.cache_reference_logprobs: {self.config.cache_reference_logprobs}")
-            
-            def _check_fsdp_root(module):
-                for name, child in module.named_children():
-                    if isinstance(child, FSDP):
-                        print(f"{name}: _is_root = {child._is_root}")
-                    else:
-                        print("not fsdp")
-            _check_fsdp_root(self.policy)
-            _check_fsdp_root(self.reference_model)
-            _check_fsdp_root(self.reward_model)
-                        
-            policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
-            with torch.no_grad():
-                
-                reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
-            
-            losses, chosen_rewards, rejected_rewards, KL = self.loss(
-                batch,
-                policy_chosen_logps,
-                policy_rejected_logps,
-                policy_KL_logps,
-                reference_chosen_logps,
-                reference_rejected_logps,
-                reference_KL_logps,
-            )
+        
+        policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
+        with torch.no_grad():    
+            reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
+        
+        losses, chosen_rewards, rejected_rewards, KL = self.loss(
+            batch,
+            policy_chosen_logps,
+            policy_rejected_logps,
+            policy_KL_logps,
+            reference_chosen_logps,
+            reference_rejected_logps,
+            reference_KL_logps,
+        )
 
-            combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
-            combined_statuses = torch.Tensor([1] * len(chosen_rewards) + [0] * len(rejected_rewards)).to(self.accelerator.device)
+        combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
+        combined_statuses = torch.Tensor([1] * len(chosen_rewards) + [0] * len(rejected_rewards)).to(self.accelerator.device)
 
-            all_rewards = self.accelerator.gather(combined_rewards)
-            all_statuses = self.accelerator.gather(combined_statuses)
-            all_KL = self.accelerator.gather(KL)
-            chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
-            rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
+        all_rewards = self.accelerator.gather(combined_rewards)
+        all_statuses = self.accelerator.gather(combined_statuses)
+        all_KL = self.accelerator.gather(KL)
+        chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
+        rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
 
-            metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
-            metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
-            metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
-            metrics[f'rewards_{mode}/KL_estimate'] = all_KL
-            metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
+        metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
+        metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
+        metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
+        metrics[f'rewards_{mode}/KL_estimate'] = all_KL
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
-            del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
-            del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
+        del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
+        del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
-            return losses.sum(), metrics
-        except:
-            self.accelerator.print("get_batch_metrics is not okay")
-            import pdb; pdb.set_trace()
+        return losses.sum(), metrics
 
 
 class PPOTrainer(BasicTrainer):

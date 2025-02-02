@@ -86,6 +86,7 @@ def main(args):
         for dataset in args.datasets:
             print(f"\nProcessing dataset: {dataset}")
 
+            n_examples = args.num_prompts + args.num_skip if args.num_prompts else None # IMPORTANT: account for skipped examples
             # Initialize the SFTDataLoader
             dataloader = SFTDataLoader(
                 dataset_names=[dataset],
@@ -95,7 +96,7 @@ def main(args):
                 n_epochs=1,
                 seed=args.seed,
                 microbatch_size=args.batch_size,
-                n_examples=(args.num_prompts + args.num_skip), # IMPORTANT: account for skipped examples
+                n_examples=n_examples, 
             )
 
             # Process the dataset in batches
@@ -155,7 +156,7 @@ if __name__ == "__main__":
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
     parser.add_argument("--mode", type=str, default="alpacaeval", help="mode")
     parser.add_argument("--num_prompts", type=int, default=None, help="number of prompts to sample from")
-    parser.add_argument("--num_skip", type=int, default=None, help="number of prompts to skip at the beginning")
+    parser.add_argument("--num_skip", type=int, default=0, help="number of prompts to skip at the beginning")
 
     args = parser.parse_args()
     main(args)

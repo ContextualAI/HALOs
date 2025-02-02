@@ -76,6 +76,8 @@ def main(args):
     )
 
     prompt_idx = 0
+    batch_idx = 0
+
     # Open the output file and create a streaming writer
     with open(args.output_file, 'w') as f:
         writer = StreamingJSONWriter(f)
@@ -92,13 +94,19 @@ def main(args):
                 max_prompt_length=args.max_prompt_length,
                 n_epochs=1,
                 seed=args.seed,
-                microbatch_size=args.batch_size
+                microbatch_size=args.batch_size,
+                n_examples=args.n_examples,
             )
 
             # Process the dataset in batches
             for batch in dataloader:
+                print(f"\nProcessing batch {batch_idx} of size {args.batch_size}")
                 # prompt_text has already had the chat template applied
                 responses = llm.generate(batch['prompt_text'], sampling_params)
+                batch_idx += 1
+                # skip number of examples as needed
+                if args.num_skip and (batch_idx + 1) * args.batch_size < args.num_skip:
+                    continue
 
                 # Process and write each output
                 for prompt, response in zip(batch['prompt'], responses):
@@ -143,6 +151,8 @@ if __name__ == "__main__":
     parser.add_argument("--num_samples_per_prompt", type=int, default=1, help="Number of samples to generate per input")
     parser.add_argument("--stop_token", type=str, default='<|im_end|>', help="Stop token")
     parser.add_argument("--mode", type=str, default="alpacaeval", help="mode")
+    parser.add_argument("--n_examples", type=int, default=None, help="number of prompts to sample from")
+    parser.add_argument("--num_skip", type=int, default=None, help="number of prompts to skip at the beginning")
 
     args = parser.parse_args()
     main(args)

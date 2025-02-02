@@ -145,7 +145,6 @@ def main(config: DictConfig):
         microbatch_size=config.model.microbatch_size,
         n_epochs=config.n_epochs,
         n_examples=config.n_examples,
-        resume_from_counter=json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0) if config.model.from_checkpoint else 0,
         **data_iterator_kwargs
     )
     eval_iterator = data_loader_class(
@@ -267,6 +266,10 @@ def main(config: DictConfig):
         scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
         scheduler.load_state_dict(scheduler_state)
 
+        num_skip = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0)
+    else:
+        num_skip = 0
+
     # Load explicit reward model if necessary (e.g., for PPO)
     if config.model.reward_model.path:
         accelerator.print(f'Loading reward model from {config.model.reward_model.path}')
@@ -296,6 +299,7 @@ def main(config: DictConfig):
         reference_model=reference_model,
         reward_model=reward_model,
         reward_tokenizer=reward_tokenizer,
+        num_skip=num_skip
     )
 
     trainer.train()

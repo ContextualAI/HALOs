@@ -71,7 +71,7 @@ class BasicTrainer(object):
                  scheduler: torch.optim.lr_scheduler.LRScheduler,
                  policy: nn.Module, 
                  reference_model: Optional[nn.Module] = None,
-                 num_skip_batches=0,
+                 num_skip=0,
                  **kwargs):
         """A trainer for a language model, supporting either SFT, HALO, or offline PPO training."""
         self.seed = config.seed
@@ -87,6 +87,7 @@ class BasicTrainer(object):
         self.tokenizer = tokenizer
         self.example_counter = 0
         self.batch_counter = 0
+        self.num_skip = num_skip
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
@@ -96,7 +97,6 @@ class BasicTrainer(object):
         self.eval_iterator = eval_iterator
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.num_skip_batches = num_skip_batches # when loading from checkpoint
 
         self.reward_model = kwargs.get('reward_model', None)
         self.reward_tokenizer = kwargs.get('reward_tokenizer', None)
@@ -296,13 +296,8 @@ class BasicTrainer(object):
         batch_metrics = defaultdict(list)
 
         for batch in self.train_iterator:
-            if self.batch_counter < self.num_skip_batches:
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
-                continue
-
             # EVALUATION
-            if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
+            if self.example_counter % self.config.eval_every == 0 or (self.example_counter == 0 and self.config.do_first_eval):
                 results = self.eval()
 
                 if self.example_counter > 0:
@@ -315,6 +310,11 @@ class BasicTrainer(object):
 
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
+
+            if self.example_counter < self.num_skip:
+                self.batch_counter += 1
+                self.example_counter += self.config.model.batch_size
+                continue
 
             if self.config.humanline:
                 self.sync_reference_with_policy()
@@ -1236,7 +1236,7 @@ class PPOTrainer(BasicTrainer):
 
         for batch in self.train_iterator:
             # EVALUATION
-            if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
+            if self.example_counter % self.config.eval_every == 0 or (self.example_counter == 0 and self.config.do_first_eval):
                 results = self.eval()
 
                 if self.example_counter > 0:
@@ -1249,6 +1249,11 @@ class PPOTrainer(BasicTrainer):
 
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
+
+            if self.example_counter < self.num_skip:
+                self.batch_counter += 1
+                self.example_counter += self.config.model.batch_size
+                continue
 
             # TRAINING
             start_time = time.time()

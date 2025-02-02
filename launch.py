@@ -145,6 +145,7 @@ def main(config: DictConfig):
         microbatch_size=config.model.microbatch_size,
         n_epochs=config.n_epochs,
         n_examples=config.n_examples,
+        resume_from_counter=json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0) if config.model.from_checkpoint else 0,
         **data_iterator_kwargs
     )
     eval_iterator = data_loader_class(
@@ -260,16 +261,11 @@ def main(config: DictConfig):
 
     if config.model.from_checkpoint:
         optimizer_state = optimizer.state_dict()
-        optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt"), map_location='cpu'))
+        optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt")))
         optimizer.load_state_dict(optimizer_state)
 
         scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
         scheduler.load_state_dict(scheduler_state)
-
-        metrics = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json')))
-        num_skip_batches = int(metrics.get('counter', 0) / config.model.batch_size)
-    else:
-        num_skip_batches = 0
 
     # Load explicit reward model if necessary (e.g., for PPO)
     if config.model.reward_model.path:
@@ -298,7 +294,6 @@ def main(config: DictConfig):
         scheduler,
         policy, 
         reference_model=reference_model,
-        num_skip_batches=num_skip_batches,
         reward_model=reward_model,
         reward_tokenizer=reward_tokenizer,
     )

@@ -1235,11 +1235,6 @@ class PPOTrainer(BasicTrainer):
         batch_metrics = defaultdict(list)
 
         for batch in self.train_iterator:
-            if self.batch_counter < self.num_skip_batches:
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
-                continue
-
             # EVALUATION
             if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
                 results = self.eval()

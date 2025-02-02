@@ -44,11 +44,11 @@ def process_batch(batch: Dict,
     processed_samples = []
     for i in range(len(batch['prompt'])):
         sample = {
-            'prompt_key': ' '.join([ x['content'] for x in batch['prompt'][i] ]), # flattened prompt
             'prompt': batch['prompt'][i],
             'instruction': batch['original_prompt'][i] if 'original_prompt' in batch else batch['prompt'][i][0]['content'],
             'output': batch['target'][i], 
-            'reward': reward_scores[i].item()
+            'reward': reward_scores[i].item(),
+            'prompt_id': batch['prompt_id'][i],
         }
         processed_samples.append(sample)
     
@@ -70,7 +70,7 @@ def convert_batch_to_binary_feedback(samples: List[Dict], threshold: float=0.5) 
     feedback = []
     for sample in samples:
         feedback_item = {
-            'prompt_key': sample['prompt_key'],
+            'prompt_id': sample['prompt_id'],
             'prompt': sample['prompt'],
             'output': sample['output'],
             'label': 1 if sample['reward'] > threshold else 0,
@@ -89,10 +89,10 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: floa
     # Group samples by prompt_id
     grouped = defaultdict(list)
     for sample in samples:
-        grouped[sample['prompt_key']].append(sample)
+        grouped[sample['prompt_id']].append(sample)
     
     feedback = []
-    for prompt_key, group in grouped.items():
+    for prompt_id, group in grouped.items():
         if len(group) < 2:
             continue
         
@@ -118,7 +118,7 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: floa
                 label = 0
                 
             feedback_item = {
-                'prompt_key': prompt_key,
+                'prompt_id': prompt_id,
                 'prompt': sample_A['prompt'],
                 'output_A': sample_A['output'],
                 'output_B': sample_B['output'],
@@ -173,12 +173,14 @@ def main(args):
         if accelerator.is_main_process:
             all_processed_samples.extend(processed_batch)
 
+    accelerator.print(f"{len(all_processed_samples)} samples gathered")
+
     # Set up output writer
     if accelerator.is_main_process:
         # Split into train and test based on prompt_ids
-        prompt_keys = list(set(sample['prompt_key'] for sample in all_processed_samples))
-        random.Random(args.seed).shuffle(prompt_keys)
-        test_prompt_keys = set(prompt_keys[:int(args.fraction_test * len(prompt_keys))])
+        prompt_ids = list(set(sample['prompt_id'] for sample in all_processed_samples))
+        random.Random(args.seed).shuffle(prompt_ids)
+        test_prompt_ids = set(prompt_ids[:int(args.fraction_test * len(prompt_ids))])
 
         print(f"Writing feedback to {args.output_path}")
         output_file = open(args.output_path, 'w')
@@ -194,8 +196,7 @@ def main(args):
             
         # Add split information and write
         for item in feedback:
-            item['split'] = 'test' if item['prompt_key'] in test_prompt_keys else 'train'
-            item.pop('prompt_key')
+            item['split'] = 'test' if item['prompt_id'] in test_prompt_ids else 'train'
             writer.write_item(item)
             
         writer.close()

@@ -565,7 +565,6 @@ class DataLoader:
                  n_examples: Optional[int] = None,
                  seed: int = 0,
                  control_tokens: Dict = {},
-                 resume_from_step: int = 0,
                  **kwargs):
         
         torch.manual_seed(seed)
@@ -585,7 +584,6 @@ class DataLoader:
         self.n_epochs = n_epochs
         self.epoch_idx = 0
         self.n_examples = n_examples
-        self.resume_from_step = resume_from_step
         
         self.full_data = {} # a dict of Examples
 

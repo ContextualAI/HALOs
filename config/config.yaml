@@ -5,7 +5,8 @@ seed: 1
 exp_name: ???
 
 # datasets should be specified as a list (e.g., ++datasets=[shp,hh])
-datasets: ???
+train_datasets: ???
+test_datasets: ???
 
 # debug mode (disables wandb, model checkpointing, etc.)
 debug: false

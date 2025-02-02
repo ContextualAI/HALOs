@@ -139,7 +139,7 @@ def main(config: DictConfig):
         control_tokens=config.loss.get("control_tokens", {}),
     )
     train_iterator = data_loader_class(
-        config.datasets, 
+        config.train_datasets, 
         tokenizer,
         split='train',
         microbatch_size=config.model.microbatch_size,
@@ -148,7 +148,7 @@ def main(config: DictConfig):
         **data_iterator_kwargs
     )
     eval_iterator = data_loader_class(
-        config.datasets, 
+        config.test_datasets, 
         tokenizer,
         split='test',
         microbatch_size=config.model.eval_microbatch_size,

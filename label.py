@@ -62,7 +62,7 @@ def process_batch(batch: Dict,
     
     return []
 
-def convert_batch_to_binary_feedback(samples: List[Dict], threshold: float=0.5) -> List[Dict]:
+def convert_to_binary_feedback(samples: List[Dict], threshold: float=0.5) -> List[Dict]:
     """
     Convert samples to binary feedback format. A sample is considered desirable if its
     reward crosses the threshold (label = 1) and undesirable otherwise (label = 0).
@@ -180,7 +180,6 @@ def main(args):
         # Split into train and test based on prompt_ids
         prompt_ids = list(set(sample['prompt_id'] for sample in all_processed_samples))
         random.Random(args.seed).shuffle(prompt_ids)
-        test_prompt_ids = set(prompt_ids[:int(args.fraction_test * len(prompt_ids))])
 
         print(f"Writing feedback to {args.output_path}")
         output_file = open(args.output_path, 'w')
@@ -188,7 +187,7 @@ def main(args):
         
         # Process and write feedback
         if args.feedback_type == 'binary':
-            feedback = convert_batch_to_binary_feedback(all_processed_samples, threshold=args.threshold)
+            feedback = convert_to_binary_feedback(all_processed_samples, threshold=args.threshold)
         elif args.feedback_type == 'pairwise':
             feedback = convert_to_pairwise_feedback(all_processed_samples, args.seed, threshold=args.threshold)
         else:
@@ -196,7 +195,7 @@ def main(args):
             
         # Add split information and write
         for item in feedback:
-            item['split'] = 'test' if item['prompt_id'] in test_prompt_ids else 'train'
+            item['split'] = args.split
             writer.write_item(item)
             
         writer.close()
@@ -221,8 +220,7 @@ if __name__ == "__main__":
     parser.add_argument("--threshold", type=float, default=0,
                         help="Reward threshold for feedback (absolute threshold for binary feedback and minimum reward difference for pairwise)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
-    parser.add_argument("--fraction_test", type=float, default=0.1,
-                        help="Fraction of prompts to use for test set (default: 0.1)")
+    parser.add_argument("--split", type=str, default='train', help="split of data (train by default)")
 
     args = parser.parse_args()
     main(args)

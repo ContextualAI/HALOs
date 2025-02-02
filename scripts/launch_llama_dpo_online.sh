@@ -67,7 +67,6 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
 
     if [[ \$NUM_SAMPLES -gt 0 ]]; then
         CUMULATIVE_PROMPTS=\$((CUMULATIVE_PROMPTS + ${PROMPTS_PER_ROUND}))
-        echo \"\$NUM_SAMPLES samples were drawn; \$CUMULATIVE_PROMPTS total prompts were seen \"
 
         # Label samples with reward model
         accelerate launch \
@@ -79,7 +78,6 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --feedback_type pairwise --batch_size 16
 
         NUM_EXAMPLES=\$(jq '. | length' R\${ROUND}_data.json)
-        echo \"\$NUM_EXAMPLES examples (both train and test) were created... \"
 
         if [ \$ROUND -eq 1 ]; then
             # First round: load from SFT checkpoint
@@ -95,7 +93,8 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            launch.py loss=dpo model=llama datasets=[R\${ROUND}_data.json] exp_name=llama3-8B-sft-dpo-R\${ROUND} \
+            launch.py loss=dpo model=llama exp_name=llama3-8B-sft-dpo-R\${ROUND} \
+            train_datasets=[R\${ROUND}_data.json] test_datasets=[ultrafeedback_armorm] \
             ++cache_dir=/scratch/gpfs/ke7953/models \
             ++model.name_or_path=\$MODEL_PATH \
             ++lr=${LR} \

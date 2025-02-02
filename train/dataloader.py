@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from .utils import rank0_print, on_rank0, delete_dict
 import pandas as pd
 import numpy as np
+import hashlib
 
 
 @dataclass
@@ -40,6 +41,7 @@ class Example:
     Class for an example in a preference or SFT dataset. If you want each prompt to be uniquely associated with an Example instance, save it in a dict.
     """
     prompt: List = field(default_factory=list)                  # list of turns, each with two keys: "role" and "content"
+    prompt_id: int = -1                                         # unique identifier for prompt (optional)
     generations: List = field(default_factory=list)             # list of list of turns (the output sequences to predict)
     sft_index: int = -1                                         # which response in self.generations should be generated for SFT
     scores: List[float] = field(default_factory=list)           # score for each generation
@@ -47,6 +49,24 @@ class Example:
     desirable: List[bool] = field(default_factory=list)         # for binary feedback data: whether the generation at the corresponding index in self.generations is desirable 
     dataset_name: str = ''
     original_prompt: str = ''                                   # the unformatted prompt (needed to recover instruction for AlpacaEval)
+
+    def __setattr__(self, name, value):
+        """Set prompt ID automatically."""
+        if name == 'prompt' and value is not None:
+            content = ''
+
+            for turn in value:
+                if "role" not in turn:
+                    raise ValueError("every turn in an example must have a 'role' field")
+                
+                if "content" not in turn:
+                    raise ValueError("every turn in an example must have a 'content' field")
+                
+                content = content + turn['content']
+
+            self.prompt_id = hashlib.sha256(content.encode()).hexdigest()
+        
+        super().__setattr__(name, value)
 
     def num_generations(self):
         return len(self.generations)
@@ -149,6 +169,7 @@ def get_sampled_data(samples_path: str, split: str) -> Dataset:
         data[prompt_key].generations.append([{"role": "assistant", "content": sample['output']}])
         data[prompt_key].dataset_name = sample['dataset']
         data[prompt_key].sft_index = 0
+        data[prompt_key].prompt_id = sample['prompt_id']
 
     return data    
 
@@ -785,6 +806,7 @@ class SFTDataLoader(DataLoader):
                     target_generation,
                 )
                 batch_element['original_prompt'] = example.original_prompt
+                batch_element['prompt_id'] = example.prompt_id
                 batch.append(batch_element)
 
                 if len(batch) == self.microbatch_size:
@@ -891,6 +913,7 @@ class ConditionalSFTDataLoader(DataLoader):
                     conditioned_generation,
                 )
                 batch_element['status'] = status
+                batch_element['prompt_id'] = example.prompt_id
                 batch.append(batch_element)
 
                 if len(batch) >= self.microbatch_size:
@@ -1008,6 +1031,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
                 batch_element['status'] = status 
                 batch_element['conversation'] = example.prompt
                 batch_element['generation'] = generation
+                batch_element['prompt_id'] = example.prompt_id
                 example_queue.append(batch_element)
                 
                 if len(example_queue) >= self.microbatch_size:
@@ -1148,6 +1172,7 @@ class PairedPreferenceDataLoader(DataLoader):
                 batch_element = {}
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], prefix='chosen'))
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], prefix='rejected'))
+                batch_element['prompt_id'] = example.prompt_id
                 batch.append(batch_element)
 
                 if len(batch) >= self.microbatch_size:

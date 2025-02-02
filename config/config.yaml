@@ -78,6 +78,10 @@ humanline: false
 # gamma in capacity function
 humanline_alpha: 1.50
 
+# online alignment
+online: false
+
+
 ## DATALOADER SETTINGS
 
 # what fraction of undesirable data should be kept

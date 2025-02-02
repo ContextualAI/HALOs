@@ -266,7 +266,10 @@ def main(config: DictConfig):
         scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
         scheduler.load_state_dict(scheduler_state)
 
-        num_skip = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0)
+        if config.online:
+            num_skip = 0  # only resume scheduler and optimizer if doing online alignment
+        else:
+            num_skip = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0)
     else:
         num_skip = 0
 

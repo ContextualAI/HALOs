@@ -76,7 +76,7 @@ def main(args):
     )
 
     prompt_idx = 0
-    batch_idx = 0
+    num_skip = args.num_skip
 
     # Open the output file and create a streaming writer
     with open(args.output_file, 'w') as f:
@@ -95,18 +95,21 @@ def main(args):
                 n_epochs=1,
                 seed=args.seed,
                 microbatch_size=args.batch_size,
-                n_examples=args.n_examples,
+                n_examples=(args.n_examples + args.num_skip), # IMPORTANT: account for skipped examples
             )
 
             # Process the dataset in batches
             for batch in dataloader:
-                print(f"\nProcessing batch {batch_idx} of size {args.batch_size}")
+                batch['prompt_text'] = batch['prompt_text'][num_skip:]
+                if len(batch['prompt_text']) == 0:
+                    num_skip -= args.batch_size
+                    num_skip = max(num_skip, 0)
+                    continue
+                else:
+                    num_skip = 0
+
                 # prompt_text has already had the chat template applied
                 responses = llm.generate(batch['prompt_text'], sampling_params)
-                batch_idx += 1
-                # skip number of examples as needed
-                if args.num_skip and (batch_idx + 1) * args.batch_size < args.num_skip:
-                    continue
 
                 # Process and write each output
                 for prompt, response in zip(batch['prompt'], responses):

@@ -316,7 +316,7 @@ class BasicTrainer(object):
                 self.example_counter += self.config.model.batch_size
                 continue
 
-            if self.config.humanline:
+            if self.config.humanline or self.config.online:
                 self.sync_reference_with_policy()
             
             # TRAINING

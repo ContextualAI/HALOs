@@ -67,7 +67,7 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
         --batch_size ${PROMPTS_PER_ROUND}
 
     # if no more prompts left, end training early
-    NUM_SAMPLES=\$(jq '. | length' R\${ROUND}_samples.json)
+    NUM_SAMPLES=\$(jq '. | length' \$SAMPLES_FILE)
 
     if [[ \$NUM_SAMPLES -gt 0 ]]; then
         CUMULATIVE_PROMPTS=\$((CUMULATIVE_PROMPTS + ${PROMPTS_PER_ROUND}))

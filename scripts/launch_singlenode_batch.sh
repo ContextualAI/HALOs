@@ -62,7 +62,7 @@ accelerate launch \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    launch.py loss=kto model=qwen datasets=[ultrabin] exp_name=qwen2-5-3B-instruct-kto-01-${WEIGHTD}D-5e-6 \
+    launch.py loss=kto model=qwen train_datasets=[ultrabin] test_datasets=[ultrabin] exp_name=qwen2-5-3B-instruct-kto-01-${WEIGHTD}D-5e-6 \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=5e-6 \

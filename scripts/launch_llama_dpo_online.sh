@@ -42,6 +42,9 @@ init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B
 export SFT_CKPT=/scratch/gpfs/ke7953/models/llama3-8B-sft/FINAL
 export REWARD_CKPT=/scratch/gpfs/ke7953/models/llama3-8B-reward/FINAL
+export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-dpo-online
+
+mkdir \$CACHE_DIR
 
 # Start iterative training from SFT checkpoint
 CURRENT_CKPT=\$SFT_CKPT
@@ -50,15 +53,16 @@ CUMULATIVE_PROMPTS=0
 
 while [ \$ROUND -le ${NUM_ROUNDS} ]; do
     echo \"Starting round \$ROUND of ${NUM_ROUNDS} \"
+    SAMPLES_FILE=\${CACHE_DIR}/R\${ROUND}_samples.json
 
     # Sample from current model (first round uses SFT checkpoint)
     python -m train.sample \$CURRENT_CKPT \
-        --output_file R\${ROUND}_samples.json \
+        --output_file \$SAMPLES_FILE \
         --gpu_count 4 \
         --datasets alpacaeval \
         --mode train \
         --num_samples_per_prompt 4 \
-        --n_examples ${PROMPTS_PER_ROUND} \
+        --num_prompts ${PROMPTS_PER_ROUND} \
         --num_skip \$CUMULATIVE_PROMPTS \
         --batch_size ${PROMPTS_PER_ROUND}
 
@@ -67,6 +71,8 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
 
     if [[ \$NUM_SAMPLES -gt 0 ]]; then
         CUMULATIVE_PROMPTS=\$((CUMULATIVE_PROMPTS + ${PROMPTS_PER_ROUND}))
+        DATA_FILE=\${CACHE_DIR}/R\${ROUND}_data.json
+        EXP_NAME=llama3-8B-sft-dpo-R\${ROUND}
 
         # Label samples with reward model
         accelerate launch \
@@ -74,10 +80,8 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            label.py \$REWARD_CKPT R\${ROUND}_samples.json R\${ROUND}_data.json \
+            label.py \$REWARD_CKPT \$SAMPLES_FILE \$DATA_FILE  \
             --feedback_type pairwise --batch_size 16
-
-        NUM_EXAMPLES=\$(jq '. | length' R\${ROUND}_data.json)
 
         if [ \$ROUND -eq 1 ]; then
             # First round: load from SFT checkpoint
@@ -93,9 +97,9 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            launch.py loss=dpo model=llama exp_name=llama3-8B-sft-dpo-R\${ROUND} \
-            train_datasets=[R\${ROUND}_data.json] test_datasets=[ultrafeedback_armorm] \
-            ++cache_dir=/scratch/gpfs/ke7953/models \
+            launch.py loss=dpo model=llama exp_name=\$EXP_NAME \
+            train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] \
+            ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \
             ++lr=${LR} \
             ++loss.beta=${BETA} \
@@ -103,7 +107,7 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             \$MODEL_LOAD_ARG
 
         # Get new checkpoint path
-        NEW_CKPT=/scratch/gpfs/ke7953/models/llama3-8B-sft-dpo-R\${ROUND}/FINAL
+        NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 
         # Clean up old checkpoint directory if it's not the SFT checkpoint
         if [ \$CURRENT_CKPT != \$SFT_CKPT ] && [ \$SLURM_PROCID -eq 0 ]; then
@@ -120,10 +124,4 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
         break
     fi
 done
-
-# Final evaluation
-lm_eval --model hf \
-    --model_args pretrained=\$CURRENT_CKPT,tokenizer=\$CURRENT_CKPT,parallelize=True \
-    --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot \
-    --batch_size 4
 "

@@ -31,13 +31,13 @@ from vllm.distributed.parallel_state import (
     destroy_model_parallel,
     destroy_distributed_environment,
 )
-import train.dataloader as dataloader_module
+import train.data as data_module
 from .utils import StreamingJSONWriter
 
 
 def get_available_datasets():
     """Get list of available datasets by finding all get_* functions in dataloader.py"""
-    return [name[4:] for name, _ in inspect.getmembers(dataloader_module, inspect.isfunction) 
+    return [name[4:] for name, _ in inspect.getmembers(data_module, inspect.isfunction) 
             if name.startswith('get_')]
 
 
@@ -50,7 +50,7 @@ def validate_datasets(datasets):
         available_str = "\n- ".join(available_datasets)
         raise ValueError(
             f"The following datasets are not available: {invalid_datasets}\n"
-            f"Available datasets must have a corresponding get_* function in dataloader.py.\n"
+            f"Available datasets must have a corresponding get_* function in train.data\n"
             f"Currently available datasets are:\n- {available_str}"
         )
 

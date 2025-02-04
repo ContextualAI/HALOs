@@ -80,7 +80,7 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            train/label.py \$SAMPLES_FILE \$DATA_FILE  \
+            -m train.label \$SAMPLES_FILE \$DATA_FILE  \
             --reward_model_path \$REWARD_CKPT --feedback_type pairwise --batch_size 16
 
         # First round: load from SFT checkpoint

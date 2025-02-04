@@ -19,7 +19,7 @@ Each Example object will contain
 - the unformatted prompt
 """
 
-import train.data as data_module
+from . import data as data_module
 import torch
 import random
 import json

@@ -4,10 +4,10 @@ Supports both reward model-based and API-based labeling.
 
 Sample usage with Accelerate for reward model:
 accelerate launch --config_file accelerate_config/fsdp_4gpu.yaml --main_process_port 29500 \ 
-    label.py --reward_model_path models/llama3-8B-bt/FINAL outputs.json reward_data.json --feedback_type pairwise
+    -m train.label --reward_model_path models/llama3-8B-bt/FINAL outputs.json reward_data.json --feedback_type pairwise
 
 Sample usage for API labeling (accelerate not needed):
-python label.py --api_type openai --api_key YOUR_KEY --api_model gpt-4 \
+accelerate launch -m train.label --api_type openai --api_key YOUR_KEY --api_model gpt-4 \
     --label_prompt "Rate this response's quality from 0 to 1:" \
     outputs.json reward_data.json --feedback_type binary
 """
@@ -22,12 +22,11 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from tqdm import tqdm
 from typing import List, Dict, Optional, Union
 import re
-from train.utils import StreamingJSONWriter
-from train.dataloader import SFTDataLoader
+from .utils import StreamingJSONWriter, batch_api_scoring
+from .dataloader import SFTDataLoader
 from collections import defaultdict
 import openai
 import asyncio
-from train.utils import batch_api_scoring
 
 
 def process_batch_with_reward_model(
@@ -154,6 +153,7 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: floa
 
 
 async def main(args):
+    accelerator = Accelerator()
     # Load samples
     with open(args.samples_path, 'r') as f:
         samples = json.load(f)
@@ -174,9 +174,6 @@ async def main(args):
             args.api_model, args.batch_size
         )
     else:
-        # Reward model-based labeling path
-        accelerator = Accelerator()
-        
         if accelerator.is_main_process:
             print(f"Loading reward model from {args.reward_model_path}")
 
@@ -212,31 +209,33 @@ async def main(args):
             if accelerator.is_main_process:
                 processed_samples.extend(batch_samples)
 
-        # Clean up distributed training resources if using reward model
-        accelerator.end_training()
-        accelerator.clear()
-
     # Set up output writer
-    print(f"Writing feedback to {args.output_path}")
-    with open(args.output_path, 'w') as f:
-        writer = StreamingJSONWriter(f)
-    
-        # Process and write feedback
-        if args.feedback_type == 'binary':
-            feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
-        elif args.feedback_type == 'pairwise':
-            feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
-        else:
-            feedback = processed_samples
-            for x in feedback:
-                x['type'] = 'scalar_feedback'
-            
-        # Add split information and write
-        for item in feedback:
-            item['split'] = args.split
-            writer.write_item(item)
+    if accelerator.is_main_process:
+        accelerator.print(f"Writing feedback to {args.output_path}")
+        with open(args.output_path, 'w') as f:
+            writer = StreamingJSONWriter(f)
         
-        writer.close()
+            # Process and write feedback
+            if args.feedback_type == 'binary':
+                feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
+            elif args.feedback_type == 'pairwise':
+                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
+            else:
+                feedback = processed_samples
+                for x in feedback:
+                    x['type'] = 'scalar_feedback'
+                
+            # Add split information and write
+            for item in feedback:
+                item['split'] = args.split
+                writer.write_item(item)
+            
+            writer.close()
+    
+    # Clean up distributed training resources if using reward model
+    accelerator.end_training()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":

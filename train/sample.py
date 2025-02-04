@@ -23,18 +23,16 @@ Note that the keys 'instruction', 'output' are necessary to run Alpacaeval on th
 """
 import argparse
 import re
-import sys
 import inspect
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
-from train.dataloader import SFTDataLoader
-from train.utils import set_offline_if_needed
+from .dataloader import SFTDataLoader
+from .utils import set_offline_if_needed, StreamingJSONWriter
 from vllm.distributed.parallel_state import (
     destroy_model_parallel,
     destroy_distributed_environment,
 )
-import train.data as data_module
-from .utils import StreamingJSONWriter
+from . import data as data_module
 
 
 def get_available_datasets():

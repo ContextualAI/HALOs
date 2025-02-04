@@ -287,6 +287,7 @@ class SFTDataLoader(DataLoader):
                 )
                 batch_element['original_prompt'] = example.original_prompt
                 batch_element['prompt_id'] = example.prompt_id
+                batch_element['dataset_name'] = example.dataset_name
                 batch.append(batch_element)
 
                 if len(batch) == self.microbatch_size:

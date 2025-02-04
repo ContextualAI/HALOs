@@ -14,14 +14,16 @@ The resulting JSON file with have items with the following fields:
 - split: either 'train' or 'test'
 - prompt_id: unique integer for the prompt
 - sample_id: integer from 0 to k - 1 for one of the k samples produced per prompt_id
+- type: set to "sample"
 
 The (prompt_id, sample_id) pair uniquely identifies each entry.
+An exit code of 1 is returned if not all the data has been processed; 0 otherwise.
 
 Note that the keys 'instruction', 'output' are necessary to run Alpacaeval on the samples.
 """
 import argparse
 import re
-import os
+import sys
 import inspect
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
@@ -82,57 +84,53 @@ def main(args):
     with open(args.output_file, 'w') as f:
         writer = StreamingJSONWriter(f)
 
-        # Process each dataset
-        for dataset in args.datasets:
-            print(f"\nProcessing dataset: {dataset}")
+        n_examples = args.num_prompts + args.num_skip if args.num_prompts else None # IMPORTANT: account for skipped examples
+        # Initialize the SFTDataLoader
+        dataloader = SFTDataLoader(
+            dataset_names=args.datasets,
+            tokenizer=tokenizer,
+            split=args.split,
+            max_prompt_length=args.max_prompt_length,
+            n_epochs=1,
+            seed=args.seed,
+            microbatch_size=args.batch_size,
+            n_examples=n_examples, 
+        )
+        
+        # Process the dataset in batches
+        for batch in dataloader:
+            batch['prompt_text'] = batch['prompt_text'][num_skip:]
+            if len(batch['prompt_text']) == 0:
+                num_skip -= args.batch_size
+                num_skip = max(num_skip, 0)
+                continue
+            else:
+                num_skip = 0
 
-            n_examples = args.num_prompts + args.num_skip if args.num_prompts else None # IMPORTANT: account for skipped examples
-            # Initialize the SFTDataLoader
-            dataloader = SFTDataLoader(
-                dataset_names=[dataset],
-                tokenizer=tokenizer,
-                split=args.split,
-                max_prompt_length=args.max_prompt_length,
-                n_epochs=1,
-                seed=args.seed,
-                microbatch_size=args.batch_size,
-                n_examples=n_examples, 
-            )
+            # prompt_text has already had the chat template applied
+            responses = llm.generate(batch['prompt_text'], sampling_params)
 
-            # Process the dataset in batches
-            for batch in dataloader:
-                batch['prompt_text'] = batch['prompt_text'][num_skip:]
-                if len(batch['prompt_text']) == 0:
-                    num_skip -= args.batch_size
-                    num_skip = max(num_skip, 0)
-                    continue
-                else:
-                    num_skip = 0
+            # Process and write each output
+            for prompt, response, dataset_name in zip(batch['prompt'], responses, batch['dataset_name']):
+                for sample_idx, sample in enumerate(response.outputs):
+                    output = {
+                        "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
+                        "generator": args.model_path,
+                        "dataset": f"{dataset_name}_{args.split}",
+                        "prompt_id": prompt_idx,
+                        "sample_id": sample_idx,
+                        "type": "sample",
+                    }
 
-                # prompt_text has already had the chat template applied
-                responses = llm.generate(batch['prompt_text'], sampling_params)
+                    # for eval with alpacaeval
+                    if args.mode == "alpacaeval":
+                        output["instruction"] = prompt[0]["content"]
+                    else:
+                        output["prompt"] = prompt
 
-                # Process and write each output
-                for prompt, response in zip(batch['prompt'], responses):
-                    for sample_idx, sample in enumerate(response.outputs):
-                        output = {
-                            "output": re.sub(r"<?\|(im_start|im_end)\|>?", "", sample.text.strip()),
-                            "generator": args.model_path,
-                            "dataset": f"{dataset}_{args.split}",
-                            "prompt_id": prompt_idx,
-                            "sample_id": sample_idx,
-                            "type": "sample",
-                        }
+                    writer.write_item(output)
 
-                        # for eval with alpacaeval
-                        if args.mode == "alpacaeval":
-                            output["instruction"] = prompt[0]["content"]
-                        else:
-                            output["prompt"] = prompt
-
-                        writer.write_item(output)
-
-                    prompt_idx += 1
+                prompt_idx += 1
 
         writer.close()
 
@@ -142,7 +140,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sample from a local model using vllm for AlpacaEval")
     parser.add_argument("model_path", type=str, help="Path to the local model folder or the Huggingface repo")
-    parser.add_argument("--datasets", type=str, nargs="+", default=["alpacaeval"], help="List of datasets to sample from (space-separated)")
+    parser.add_argument("--datasets", nargs="+", default=["alpacaeval"], help="List of datasets to sample from (space-separated)")
     parser.add_argument("--output_file", type=str, default="outputs.json", help="Path to save the output JSON file")
     parser.add_argument("--gpu_count", type=int, default=1, help="Number of GPUs to use")
     parser.add_argument("--temperature", type=float, default=0.7, help="Sampling temperature")

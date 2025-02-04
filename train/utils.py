@@ -7,14 +7,80 @@ import os
 from datetime import datetime
 import torch
 import torch.distributed as dist
-import os
 import json
+import openai
+import asyncio
 from typing import Dict, Union, Type, List, TextIO
-from collections.abc import Mapping
+from tqdm import tqdm
 
 import huggingface_hub
 from huggingface_hub import HfApi, HfFolder
 from huggingface_hub.utils import LocalTokenNotFoundError
+
+
+async def batch_api_scoring(
+    samples: List[Dict],
+    client: openai.AsyncOpenAI,
+    system_prompt: str,
+    label_prompt: str,
+    model: str,
+    batch_size: int = 10
+) -> List[float]:
+    """Process a batch of samples through the API concurrently."""
+    scores = []
+    total_samples = len(samples)
+    
+    # Create progress bar for overall progress
+    pbar = tqdm(total=total_samples, desc="Processing samples through API")
+
+    for i in range(0, len(samples), batch_size):
+        batch = samples[i:i + batch_size]
+        tasks = []
+
+        for sample in batch:
+            prompt = f"{label_prompt}\n\nPrompt: {sample['prompt'][0]['content']}\nResponse: {sample['output']}"
+            tasks.append(get_api_completion(client, system_prompt, prompt, model))
+
+        batch_scores = await asyncio.gather(*tasks)
+        scores.extend(batch_scores)
+
+        # Update progress bar
+        pbar.update(len(batch))
+        pbar.set_postfix({'Batch': f'{i//batch_size + 1}/{(total_samples + batch_size - 1)//batch_size}',
+                         'Samples': f'{min(i + batch_size, total_samples)}/{total_samples}'})
+    
+    pbar.close()
+        
+    return scores
+
+
+async def get_api_completion(
+    client: openai.AsyncOpenAI,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float = 0.0,
+    max_retries: int = 3,
+    retry_delay: float = 1.0
+) -> float:
+    """Get completion from API with retry logic."""
+    for attempt in range(max_retries):
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=temperature
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"Error after {max_retries} attempts: {e}")
+                return 0.0
+            await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
 
 
 class StreamingJSONWriter:

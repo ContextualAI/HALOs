@@ -80,14 +80,14 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            label.py \$REWARD_CKPT \$SAMPLES_FILE \$DATA_FILE  \
-            --feedback_type pairwise --batch_size 16
+            train/label.py \$SAMPLES_FILE \$DATA_FILE  \
+            --reward_model_path \$REWARD_CKPT --feedback_type pairwise --batch_size 16
 
+        # First round: load from SFT checkpoint
+        # Subsequent rounds: policy resumes from previous checkpoint; reference model is also updated via load_from
         if [ \$ROUND -eq 1 ]; then
-            # First round: load from SFT checkpoint
             MODEL_LOAD_ARG=\"++model.load_from=\$CURRENT_CKPT\"
         else
-            # Subsequent rounds: policy resumes from previous checkpoint; reference model is also updated via load_from
             MODEL_LOAD_ARG=\"++model.from_checkpoint=\$CURRENT_CKPT ++model.load_from=\$CURRENT_CKPT\"
         fi
         
@@ -106,7 +106,6 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             ++model.batch_size=16 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=16 ++online=true \
             \$MODEL_LOAD_ARG
 
-        # Get new checkpoint path
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 
         # Clean up old checkpoint directory if it's not the SFT checkpoint
@@ -116,7 +115,6 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             rm -rf \$OLD_EXP_DIR
         fi
 
-        # Update checkpoint for next round
         CURRENT_CKPT=\$NEW_CKPT
         ROUND=\$((ROUND + 1))
     else

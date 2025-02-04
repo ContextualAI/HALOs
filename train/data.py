@@ -209,16 +209,16 @@ def get_feedback(feedback_path: str, split: str) -> Dataset:
         if samples[0].get('split', split) != split:
             continue
         
-        if feedback_type == 'binary_feedback':
-            example = Example()
-            
+        example = Example()
+
+        if feedback_type == 'binary_feedback':    
             # Add each sample's output and its desirability based on the label
             for sample in samples:
                 example.prompt = sample['prompt']
                 example.generations.append(sample['output'])
                 example.desirable.append(bool(sample['label']))
                 example.scores.append(sample['reward'])
-                example.dataset_name = 'feedback'
+                example.dataset_name = feedback_type
             
             # For binary feedback, use any desirable response as the SFT target
             # If no desirable responses, use the highest scoring one
@@ -227,18 +227,13 @@ def get_feedback(feedback_path: str, split: str) -> Dataset:
                 example.sft_index = desirable_indices[0]
             else:
                 example.sft_index = max(range(len(example.scores)), key=lambda i: example.scores[i])
-
-            data[prompt_id] = example
-            
         elif feedback_type == 'pairwise_feedback':
-            example = Example()
-            
             # Track unique outputs to avoid duplicates
             output_to_idx = {}
             
             for pair in samples:
                 example.prompt = pair['prompt']
-                example.dataset_name = 'feedback'
+                example.dataset_name = feedback_type
 
                 # Add outputs if not already added
                 if pair['output_A'][0]['content'] not in output_to_idx:
@@ -259,10 +254,14 @@ def get_feedback(feedback_path: str, split: str) -> Dataset:
             
             # Use highest scoring response as SFT target
             example.sft_index = max(range(len(example.scores)), key=lambda i: example.scores[i])
-            
-            data[prompt_id] = example
         else:
-            raise ValueError(f"Unsupported feedback type: {feedback_type}")
+            for sample in samples:
+                example.prompt = sample['prompt']
+                example.generations.append(sample['output'])
+                example.scores.append(sample['reward'])
+                example.dataset_name = feedback_type
+        
+        data[prompt_id] = example
     
     return data
 

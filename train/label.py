@@ -22,7 +22,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from tqdm import tqdm
 from typing import List, Dict, Optional, Union
 import re
-from .utils import StreamingJSONWriter, batch_api_scoring
+from .utils import StreamingJSONWriter, get_api_completion
 from .dataloader import SFTDataLoader
 from collections import defaultdict
 import openai
@@ -69,12 +69,34 @@ async def process_samples_with_api(
     system_prompt: str,
     label_prompt: str,
     model: str,
-    batch_size: int
+    batch_size: int = 10
 ) -> List[Dict]:
     """Process all samples through the API."""
-    scores = await batch_api_scoring(samples, client, system_prompt, label_prompt, model, batch_size)
-    
+    scores = []
     processed_samples = []
+    total_samples = len(samples)
+    
+    # Create progress bar for overall progress
+    pbar = tqdm(total=total_samples, desc="Processing samples through API")
+
+    for i in range(0, len(samples), batch_size):
+        batch = samples[i:i + batch_size]
+        tasks = []
+
+        for sample in batch:
+            prompt = f"{label_prompt}\n\nPrompt: {sample['prompt'][0]['content']}\nResponse: {sample['output']}"
+            tasks.append(get_api_completion(client, system_prompt, prompt, model))
+
+        batch_scores = await asyncio.gather(*tasks)
+        scores.extend(batch_scores)
+
+        # Update progress bar
+        pbar.update(len(batch))
+        pbar.set_postfix({'Batch': f'{i//batch_size + 1}/{(total_samples + batch_size - 1)//batch_size}',
+                         'Samples': f'{min(i + batch_size, total_samples)}/{total_samples}'})
+    
+    pbar.close()
+    
     for sample, score in zip(samples, scores):
         try:
             score = float(score)
@@ -84,6 +106,8 @@ async def process_samples_with_api(
                 
         processed_sample = sample.copy()
         processed_sample['reward'] = score
+        # since a dataloader isn't used, the output has to be explicitly formatted
+        processed_sample['output'] = [{ "role" : "assistant", "content" : processed_sample['output']}]
         processed_samples.append(processed_sample)
             
     return processed_samples

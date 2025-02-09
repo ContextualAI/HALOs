@@ -233,17 +233,19 @@ class DataLoader:
         """Get the number of training steps."""
         raise NotImplementedError
     
-
-class SFTDataLoader(DataLoader):
-    """
-    Dataloader for supervised fine-tuning.
-    """
-    def __iter__(self):
-        flat_data = []
+    def get_flat_data(self, prompts):
+        """
+        Return the flattened data for the given prompts across all processes as a list of tuples.
+        The first element of this tuple should always be an Example; the subsequent elements can vary.
+        """
+        raise NotImplementedError
+    
+    def get_process_data(self):
+        """
+        Return the subset of data to be processed in the current process.
+        """
         prompts = list(self.full_data.keys())
-        
-        for prompt in prompts:
-            flat_data.append(self.full_data[prompt])
+        flat_data = self.get_flat_data(prompts)
 
         if self.num_processes == 1: # for eval usually
             usable_size = len(flat_data)
@@ -252,19 +254,36 @@ class SFTDataLoader(DataLoader):
             usable_size = len(flat_data) // global_batch_size * global_batch_size
         
         self.rng.shuffle(flat_data)
-        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
+        process_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
+        return process_data
+    
 
+class SFTDataLoader(DataLoader):
+    """
+    Dataloader for supervised fine-tuning.
+    """
+    def get_flat_data(self, prompts):
+        flat_data = []
+
+        for prompt in prompts:
+            flat_data.append(self.full_data[prompt])
+
+        return flat_data
+    
+    def __iter__(self):
+        flat_process_data = self.get_process_data()
+       
         epoch_idx = 0
         example_idx = 0
         done = False
         
         while True:
             if done: break
-            self.rng.shuffle(flat_data)
+            self.rng.shuffle(flat_process_data)
 
             batch = []
 
-            for example in flat_data:
+            for example in flat_process_data:
                 # Assuming example.prompt is now a list of conversation turns
                 conversation = example.prompt
                 if not isinstance(conversation[0], dict):
@@ -352,29 +371,19 @@ class ConditionalSFTDataLoader(DataLoader):
         return flat_data
     
     def __iter__(self):
-        prompts = list(self.full_data.keys())
-        flat_data = self.get_flat_data(prompts)
+        flat_process_data = self.get_process_data()
 
-        if self.num_processes == 1: # for eval usually
-            usable_size = len(flat_data)
-        else: # to avoid hanging with uneven batches
-            global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(flat_data) // global_batch_size * global_batch_size
-        
-        self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
-        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
-      
         epoch_idx = 0
         example_idx = 0
         done = False
         
         while True:
             if done: break
-            self.rng.shuffle(flat_data)
+            self.rng.shuffle(flat_process_data)
 
             batch = []
 
-            for example, generation, status in flat_data:
+            for example, generation, status in flat_process_data:
                 # Convert prompt to conversation format if it's not already
                 conversation = example.prompt
                 if not isinstance(conversation[0], dict):
@@ -385,13 +394,13 @@ class ConditionalSFTDataLoader(DataLoader):
 
                 # Add control token to the generation
                 if status == 'chosen':
-                    conditioned_generation = self.control_tokens["chosen"] + generation
+                    generation[-1]['content'] = self.control_tokens["chosen"] + generation[-1]['content']
                 else:
-                    conditioned_generation = self.control_tokens["rejected"] + generation
+                    generation[-1]['content'] = self.control_tokens["rejected"] + generation[-1]['content']
 
                 batch_element = self.tokenize_batch_element(
                     conversation,
-                    conditioned_generation,
+                    generation,
                 )
                 batch_element['status'] = status
                 batch_element['prompt_id'] = example.prompt_id
@@ -485,17 +494,7 @@ class UnpairedPreferenceDataLoader(DataLoader):
         return flat_data
 
     def __iter__(self):
-        prompts = list(self.full_data.keys())
-        flat_data = self.get_flat_data(prompts)
-
-        if self.num_processes == 1: # for eval usually
-            usable_size = len(flat_data)
-        else: # to avoid hanging with uneven batches
-            global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(flat_data) // global_batch_size * global_batch_size
-        
-        self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
-        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
+        flat_process_data = self.get_process_data()
 
         epoch_idx = 0
         example_idx = 0
@@ -503,11 +502,11 @@ class UnpairedPreferenceDataLoader(DataLoader):
 
         while True:
             if done: break
-            self.rng.shuffle(flat_data)   # so generations in the same preference are not in the same batch
+            self.rng.shuffle(flat_process_data)   # so generations in the same preference are not in the same batch
             batch = []
             example_queue = []
 
-            for example, generation, status in flat_data:
+            for example, generation, status in flat_process_data:
                 batch_element = self.tokenize_batch_element(example.prompt, generation, prefix='target')
                 batch_element['status'] = status 
                 batch_element['conversation'] = example.prompt
@@ -618,8 +617,10 @@ class PairedPreferenceDataLoader(DataLoader):
     """
     Dataloader for losses that do require pairwise preferences (e.g., DPO).
     """
-    def __iter__(self):
-        prompts = list(self.full_data.keys())
+    def get_flat_data(self, prompts):
+        """
+        Return a flat list of examples given a list of prompts.
+        """
         flat_data = []
 
         for prompt in prompts:
@@ -631,14 +632,10 @@ class PairedPreferenceDataLoader(DataLoader):
             for pair in example.pairs:
                 flat_data.append((example, pair))
 
-        if self.num_processes == 1: # for eval, sampling
-            usable_size = len(flat_data)
-        else: # to avoid hanging with uneven batches
-            global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(flat_data) // global_batch_size * global_batch_size
-
-        self.rng.shuffle(flat_data) # shuffle before splitting across processes, otherwise some processes will only get chosen examples
-        flat_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
+        return flat_data
+    
+    def __iter__(self):
+        flat_process_data = self.get_process_data()
         
         epoch_idx = 0
         example_idx = 0
@@ -646,10 +643,10 @@ class PairedPreferenceDataLoader(DataLoader):
 
         while True:
             if done: break
-            self.rng.shuffle(flat_data)
+            self.rng.shuffle(flat_process_data)
             batch = []
 
-            for example, (i, j) in flat_data:
+            for example, (i, j) in flat_process_data:
                 batch_element = {}
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], prefix='chosen'))
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], prefix='rejected'))

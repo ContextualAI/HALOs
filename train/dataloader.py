@@ -432,6 +432,9 @@ class UnpairedPreferenceDataLoader(DataLoader):
     This assumes that if an example has no pairs, then it is naturally unpaired, using the 'desirable' field
     to infer its label. If an example has pairs, then it is assumed to be from a naturally paired dataset, and 
     the preferred/dispreferred generations are from the desirable/undesirable conditional generations given x. 
+
+    If the score is not provided in the data, the score will be assumed be assumed to +1 for desirable generations
+    and -1 for undesirable ones.
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -462,11 +465,13 @@ class UnpairedPreferenceDataLoader(DataLoader):
             if example.pairs == [] and example.desirable != []:
                 for i in range(len(example.desirable)):
                     if seen_desirable < allowed_desirable and example.desirable[i]:
-                        flat_data.append((example, example.generations[i], 'chosen', example.scores[i]))
+                        score = example.scores[i] if len(example.scores) > i else 1
+                        flat_data.append((example, example.generations[i], 'chosen', score))
                         seen_desirable += 1
 
                     if seen_undesirable < allowed_undesirable and not example.desirable[i]:
-                        flat_data.append((example, example.generations[i], 'rejected', example.scores[i]))
+                        score = example.scores[i] if len(example.scores) > i else -1
+                        flat_data.append((example, example.generations[i], 'rejected', score))
                         seen_undesirable += 1
             # getting unpaired data out of pairs
             elif example.pairs != []:
@@ -475,11 +480,13 @@ class UnpairedPreferenceDataLoader(DataLoader):
 
                 for i,j in example.pairs:
                     if seen_desirable < allowed_desirable:
-                        flat_data.append((example, example.generations[i], 'chosen', example.scores[i]))
+                        score = example.scores[i] if len(example.scores) > i else 1
+                        flat_data.append((example, example.generations[i], 'chosen', score))
                         seen_desirable += 1
                     
                     if seen_undesirable < allowed_undesirable:
-                        flat_data.append((example, example.generations[j], 'rejected', example.scores[j]))
+                        score = example.scores[j] if len(example.scores) > j else -1
+                        flat_data.append((example, example.generations[j], 'rejected', score))
                         seen_undesirable += 1
             else:
                 raise IOError("data is neither paired nor has desirability labels")

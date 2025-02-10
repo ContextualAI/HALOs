@@ -75,9 +75,8 @@ load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
 humanline: false
-
-# gamma in capacity function
-humanline_alpha: 1.50
+humanline_alpha: 0.10
+humanline_M: 1.50
 
 # online alignment
 online: false

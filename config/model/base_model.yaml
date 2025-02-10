@@ -22,7 +22,7 @@ policy_dtype: bfloat16
 reference_dtype: bfloat16
 
 # the maximum gradient norm to clip to
-max_grad_norm: 5.0
+max_grad_norm: 1.0
 
 # gradient norm for clipping gradient of value head (for PPO)
 v_head_max_grad_norm: 0.10

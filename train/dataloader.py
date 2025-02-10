@@ -462,11 +462,11 @@ class UnpairedPreferenceDataLoader(DataLoader):
             if example.pairs == [] and example.desirable != []:
                 for i in range(len(example.desirable)):
                     if seen_desirable < allowed_desirable and example.desirable[i]:
-                        flat_data.append((example, example.generations[i], 'chosen'))
+                        flat_data.append((example, example.generations[i], 'chosen', example.scores[i]))
                         seen_desirable += 1
 
                     if seen_undesirable < allowed_undesirable and not example.desirable[i]:
-                        flat_data.append((example, example.generations[i], 'rejected'))
+                        flat_data.append((example, example.generations[i], 'rejected', example.scores[i]))
                         seen_undesirable += 1
             # getting unpaired data out of pairs
             elif example.pairs != []:
@@ -475,11 +475,11 @@ class UnpairedPreferenceDataLoader(DataLoader):
 
                 for i,j in example.pairs:
                     if seen_desirable < allowed_desirable:
-                        flat_data.append((example, example.generations[i], 'chosen'))
+                        flat_data.append((example, example.generations[i], 'chosen', example.scores[i]))
                         seen_desirable += 1
                     
                     if seen_undesirable < allowed_undesirable:
-                        flat_data.append((example, example.generations[j], 'rejected'))
+                        flat_data.append((example, example.generations[j], 'rejected', example.scores[j]))
                         seen_undesirable += 1
             else:
                 raise IOError("data is neither paired nor has desirability labels")
@@ -496,12 +496,13 @@ class UnpairedPreferenceDataLoader(DataLoader):
             batch = []
             example_queue = []
 
-            for example, generation, status in self.get_process_data():
+            for example, generation, status, score in self.get_process_data():
                 batch_element = self.tokenize_batch_element(example.prompt, generation, prefix='target')
                 batch_element['status'] = status 
                 batch_element['conversation'] = example.prompt
                 batch_element['generation'] = generation
                 batch_element['prompt_id'] = example.prompt_id
+                batch_element['score'] = score
                 example_queue.append(batch_element)
                 
                 if len(example_queue) >= self.microbatch_size:
@@ -546,6 +547,12 @@ class UnpairedPreferenceDataLoader(DataLoader):
     
 
 class GroupUnpairedPreferenceDataLoader(UnpairedPreferenceDataLoader):
+    """
+    A variant of UnpairedPreferenceDataLoader that groups examples with the same prompt in the same
+    batch (but distributed across different processes). It is still possible for a prompt to have
+    its outputs split across batches, if they occur at a boundary, but most outputs should appear
+    together. This is intended for losses like GRPO.
+    """
     def get_process_data(self):
         """
         Return the subset of data to be processed in the current process. 

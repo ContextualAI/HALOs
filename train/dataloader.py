@@ -23,7 +23,8 @@ from . import data as data_module
 import torch
 import random
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
+from collections import defaultdict
 import numpy as np
 
 
@@ -230,7 +231,7 @@ class DataLoader:
         raise NotImplementedError
 
     def get_num_training_steps(self):
-        """Get the number of training steps."""
+        """Get the number of training steps (needed for learning rate scheduler)."""
         raise NotImplementedError
     
     def get_flat_data(self, prompts):
@@ -271,19 +272,15 @@ class SFTDataLoader(DataLoader):
         return flat_data
     
     def __iter__(self):
-        flat_process_data = self.get_process_data()
-       
         epoch_idx = 0
         example_idx = 0
         done = False
         
         while True:
             if done: break
-            self.rng.shuffle(flat_process_data)
-
             batch = []
 
-            for example in flat_process_data:
+            for example in self.get_process_data():
                 # Assuming example.prompt is now a list of conversation turns
                 conversation = example.prompt
                 if not isinstance(conversation[0], dict):
@@ -371,19 +368,15 @@ class ConditionalSFTDataLoader(DataLoader):
         return flat_data
     
     def __iter__(self):
-        flat_process_data = self.get_process_data()
-
         epoch_idx = 0
         example_idx = 0
         done = False
         
         while True:
             if done: break
-            self.rng.shuffle(flat_process_data)
-
             batch = []
 
-            for example, generation, status in flat_process_data:
+            for example, generation, status in self.get_process_data():
                 # Convert prompt to conversation format if it's not already
                 conversation = example.prompt
                 if not isinstance(conversation[0], dict):
@@ -494,19 +487,16 @@ class UnpairedPreferenceDataLoader(DataLoader):
         return flat_data
 
     def __iter__(self):
-        flat_process_data = self.get_process_data()
-
         epoch_idx = 0
         example_idx = 0
         done = False
 
         while True:
             if done: break
-            self.rng.shuffle(flat_process_data)   # so generations in the same preference are not in the same batch
             batch = []
             example_queue = []
 
-            for example, generation, status in flat_process_data:
+            for example, generation, status in self.get_process_data():
                 batch_element = self.tokenize_batch_element(example.prompt, generation, prefix='target')
                 batch_element['status'] = status 
                 batch_element['conversation'] = example.prompt
@@ -553,6 +543,52 @@ class UnpairedPreferenceDataLoader(DataLoader):
         num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
         num_training_steps = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
         return num_training_steps // self.num_processes
+    
+
+class GroupUnpairedPreferenceDataLoader(UnpairedPreferenceDataLoader):
+    def get_process_data(self):
+        """
+        Return the subset of data to be processed in the current process. 
+        Examples sharing the same prompt ID will appear consecutively, in the same process.
+        """
+        flat_data = self.get_flat_data(list(self.full_data.keys()))
+        groups_per_prompt = defaultdict(list) # map prompt id to indices in flat_data
+        counts_per_prompt = defaultdict(int)  # map prompt id to number of outputs in flat_data
+
+        for i, tup in enumerate(flat_data):
+            if not isinstance(tup[0], data_module.Example):
+                raise ValueError("first element of each tuple in flattened data must be an Example")
+            
+            groups_per_prompt[tup[0].prompt_id].append(i)
+            counts_per_prompt[tup[0].prompt_id] += 1
+
+        # number of outputs per prompt should be the same
+        min_count_per_prompt = min(counts_per_prompt.values())
+        max_count_per_prompt = max(counts_per_prompt.values())
+
+        if min_count_per_prompt != max_count_per_prompt:
+            raise Warning(f"number of outputs varies across examples; to simplify batching, only {min_count_per_prompt} will be used")
+        
+        process_index = 0
+        process_data = []
+        prompt_ids = list(groups_per_prompt.keys())
+        self.rng.shuffle(prompt_ids)
+
+        # examples should be distributed so that two examples with the same prompt should be in the same minibatch 
+        # even if in different microbatches across different processes
+        for prompt_id in prompt_ids:
+            groups_per_prompt[prompt_id] = groups_per_prompt[prompt_id][:min_count_per_prompt]
+
+            for i in groups_per_prompt[prompt_id]:
+                if process_index == self.process_index:  
+                    process_data.append(flat_data[i])
+
+                process_index = (process_index + 1) % self.num_processes
+                
+        # discard those that cannot be batched
+        usable_size = int(len(process_data) // self.microbatch_size * self.microbatch_size)
+
+        return process_data[:usable_size]
 
 
 class ScoreDataLoader(UnpairedPreferenceDataLoader):
@@ -635,18 +671,15 @@ class PairedPreferenceDataLoader(DataLoader):
         return flat_data
     
     def __iter__(self):
-        flat_process_data = self.get_process_data()
-        
         epoch_idx = 0
         example_idx = 0
         done = False
 
         while True:
             if done: break
-            self.rng.shuffle(flat_process_data)
             batch = []
 
-            for example, (i, j) in flat_process_data:
+            for example, (i, j) in self.get_process_data():
                 batch_element = {}
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], prefix='chosen'))
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], prefix='rejected'))

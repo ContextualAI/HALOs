@@ -1,0 +1,11 @@
+# Group Relative Policy Optimization
+
+# the weight placed on the KL penalty
+beta: 0.10
+
+# used for clipping the log-ratio, as in PPO
+epsilon: 0.10
+
+trainer: GRPOTrainer
+
+dataloader: GroupUnpairedPreferenceDataLoader

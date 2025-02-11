@@ -316,7 +316,7 @@ class BasicTrainer(object):
                 self.example_counter += self.config.model.batch_size
                 continue
 
-            if self.config.humanline or self.config.online:
+            if self.config.online:
                 self.sync_reference_with_policy()
             
             # TRAINING
@@ -965,6 +965,96 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
         del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
+        return losses.sum(), metrics
+
+
+class GRPOTrainer(BasicTrainer):
+    def loss(self, batch: Dict, policy_logps: torch.FloatTensor, reference_logps: torch.FloatTensor, advantages: torch.FloatTensor, group_size: torch.FloatTensor):
+        """
+        Compute the GRPO loss.
+
+        Args:
+            policy_logps: log probability of the output under the policy (microbatch_size, sequence_length) 
+            reference_logps: log probability of the output under the reference model (microbatch_size, sequence_length) 
+            advantages: sequence level advantages (microbatch_size,)
+            group_size: number of outputs (in entire batch) belonging to prompt associated with sequence (microbatch_size,)
+
+        Returns:
+            sequence-level losses (microbatch_size,), sequence-level KL (microbatch_size,), weighted advantages (microbatch_size,)
+        """
+        logratio = policy_logps.sum(-1) - reference_logps.sum(-1)
+        KL = (-logratio).exp() + logratio - 1
+
+        weighted_adv = advantages * logratio.exp()
+        weighted_adv_clipped =  advantages * logratio.exp().clamp(1 - self.config.loss.epsilon, 1 + self.config.loss.epsilon)
+        losses = -1 * (torch.min(weighted_adv, weighted_adv_clipped) - self.config.loss.beta * KL) / group_size
+
+        return losses, KL.detach(), weighted_adv.detach()
+
+    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Run the given model on the given batch of inputs.
+        
+        Args:
+            - model: the model to use for the forward pass
+            - batch: the microbatch (should have the input ids, attention mask, and labels)
+            - use_cache: if true, can get cached logprobs instead
+
+        Returns:
+            logps: log probabilities of examples
+        """    
+        with self.accelerator.autocast():
+            if use_cache:
+                all_logps = model(batch['target_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+            else:
+                all_logits = model(
+                    batch['target_combined_input_ids'], 
+                    attention_mask=batch['target_combined_attention_mask'],
+                ).logits.to(self.policy_dtype)
+            
+                all_logps = self.get_batch_logps(all_logits, batch['target_labels'])
+
+        return all_logps
+    
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
+        """Compute the loss and other metrics for the given batch of inputs."""
+        metrics = {}
+        
+        policy_logps = self.forward(self.policy, batch)
+        with torch.no_grad():    
+            reference_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
+        
+        prompt_ids = self.accelerator.gather_for_metrics(batch['prompt_id'])
+        scores = self.accelerator.gather_for_metrics(batch['score'])
+        scores_by_prompt_id = defaultdict(list)
+
+        for i in range(len(prompt_ids)):
+            scores_by_prompt_id[prompt_ids[i]].append(scores[i])
+
+        group_size = []
+        advantages = []
+
+        for i, prompt_id in enumerate(batch['prompt_id']):
+            group_size.append(len(scores_by_prompt_id[prompt_id]))
+            advantages.append((batch['score'][i] - np.mean(scores_by_prompt_id[prompt_id])) / np.std(scores_by_prompt_id[prompt_id]))
+
+        advantages = torch.Tensor(advantages).to(self.accelerator.device)
+        group_size = torch.Tensor(group_size).to(self.accelerator.device)
+
+        losses, KL, weighted_advantage = self.loss(
+            batch,
+            policy_logps,
+            reference_logps,
+            advantages,
+            group_size
+        )
+
+        metrics[f'rewards_{mode}/rewards'] = batch['score']
+        metrics[f'rewards_{mode}/weighted_advantage'] = self.accelerator.gather(weighted_advantage)
+        metrics[f'rewards_{mode}/KL'] = self.accelerator.gather(KL)
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
+        
+        del policy_logps, reference_logps, scores, prompt_ids, advantages, group_size, KL, weighted_advantage
+        
         return losses.sum(), metrics
 
 

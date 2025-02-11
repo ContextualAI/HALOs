@@ -1048,7 +1048,7 @@ class GRPOTrainer(BasicTrainer):
             group_size
         )
 
-        metrics[f'rewards_{mode}/rewards'] = batch['score']
+        metrics[f'rewards_{mode}/rewards'] = scores
         metrics[f'rewards_{mode}/weighted_advantage'] = self.accelerator.gather(weighted_advantage)
         metrics[f'rewards_{mode}/KL'] = self.accelerator.gather(KL)
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()

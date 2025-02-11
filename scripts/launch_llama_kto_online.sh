@@ -76,7 +76,7 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
 
         # Label samples with API (must ssh into the login node for internet access)
         ssh della-gpu \"source ~/.bashrc && \
-            conda activate halos_6 && \
+            conda activate halos && \
             cd /home/ke7953/HALOs && \
             accelerate launch -m train.label \$SAMPLES_FILE \$DATA_FILE \
             --api_type openai --api_key \$OPENAI --feedback_type binary --batch_size 16 \"

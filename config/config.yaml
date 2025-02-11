@@ -78,7 +78,7 @@ humanline: false
 humanline_alpha: 0.10
 humanline_M: 1.50
 
-# online alignment
+# whether to do online alignment (is automatically overwritten for ppo/grpo; needs to manually overwritten for others)
 online: false
 
 

@@ -9,3 +9,6 @@ epsilon: 0.10
 trainer: GRPOTrainer
 
 dataloader: GroupUnpairedPreferenceDataLoader
+
+# online by default
+++online: true

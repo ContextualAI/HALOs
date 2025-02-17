@@ -890,7 +890,8 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         - adjust for entire chosen(rejected) sequences that have been sampled out by upweighting other chosen(rejected) examples
         """
         if policy_chosen_logps.shape[0] != 0:
-            chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+            # chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps, self.config.humanline_uniform_chosen)
+            chosen_rewards = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps, chosen=self.config.humanline_uniform_chosen)
         else:
             chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
 
@@ -900,6 +901,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
             rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
 
         KL_rewards = self.get_sequence_rewards(policy_KL_logps.detach(), reference_KL_logps.detach())
+        # KL_rewards = self.get_sequence_rewards(policy_KL_logps.detach(), reference_KL_logps.detach(), chosen=self.config.humanline_uniform_kl)
 
         stats = self.accelerator.reduce(torch.Tensor([
             (chosen_rewards.abs() != 0).float().sum().item(),   # non-empty sequences after rejection sampling

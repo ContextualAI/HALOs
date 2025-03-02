@@ -84,11 +84,11 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --reward_model_path \$REWARD_CKPT --feedback_type pairwise --batch_size 16
 
         # First round: load from SFT checkpoint
-        # Subsequent rounds: policy resumes from previous checkpoint; reference model is also updated via load_from
+        # Subsequent rounds: policy resumes from previous checkpoint; reference model stays at SFT checkpoint
         if [ \$ROUND -eq 1 ]; then
             MODEL_LOAD_ARG=\"++model.load_from=\$CURRENT_CKPT\"
         else
-            MODEL_LOAD_ARG=\"++model.from_checkpoint=\$CURRENT_CKPT ++model.load_from=\$CURRENT_CKPT\"
+            MODEL_LOAD_ARG=\"++model.from_checkpoint=\$CURRENT_CKPT ++model.load_from=\$SFT_CKPT\"
         fi
         
         # Train DPO model on the newly sampled and labeled data

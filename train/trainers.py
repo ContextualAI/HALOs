@@ -135,6 +135,58 @@ class BasicTrainer(object):
 
         return per_token_logps * loss_mask
     
+    def get_humanline_mask(self, policy_logps, reference_logps):
+        """
+        Return a boolean mask over tokens, where True means that the token has been rejected under humanline sampling.
+
+        Args:
+            policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
+            reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
+
+        Returns:
+            The rejection mask (microbatch_size, sequence length)
+        """
+        torch.manual_seed(self.seed)
+            
+        forward_rv = torch.distributions.beta.Beta(self.config.humanline_gamma_R, self.config.humanline_beta_R)
+        forward_M = (reference_logps - policy_logps).exp().max().item()
+        forward_sample = forward_rv.sample(policy_logps.shape).to(self.accelerator.device)
+        forward_token_mask = (reference_logps - policy_logps).exp() < forward_M * forward_sample
+
+        backward_rv = torch.distributions.beta.Beta(self.config.humanline_gamma_P, self.config.humanline_beta_P)
+        backward_sample = backward_rv.sample(policy_logps.shape).to(self.accelerator.device)
+        backward_M = (policy_logps - reference_logps).exp().max().item()
+        backward_token_mask = (policy_logps - reference_logps).exp() < backward_M * backward_sample
+
+        humanline_mask = forward_token_mask | backward_token_mask
+        
+        return humanline_mask
+    
+    def get_ratios(self, policy_logps, reference_logps, sequence_level=False):
+        """
+        Return the probability ratio under the policy vs the reference [policy(y|x)/reference(y|x)].
+        Apply humanline sampling if specified.
+
+        Args:
+            policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
+            reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
+            sequence_level: if true, return the probability for the entire sequence; otherwise, per-token
+
+        Returns:
+            The probability ratios (microbatch_size, sequence length) if sequence_level; otherwise, (microbatch_size, 1)
+        """
+        logratio = policy_logps - reference_logps
+
+        if self.config.humanline:
+            logratio = torch.where(self.get_humanline_mask(policy_logps, reference_logps), 0, logratio)
+
+        if sequence_level:
+            logratio = logratio.sum(-1)
+
+        ratio = logratio.exp()
+
+        return ratio
+
     def get_sequence_rewards(self, policy_logps, reference_logps, length_normalized=False):
         """
         If regular alignment, return the HALO-defined reward for the sequence (log [policy(y|x)/reference(y|x)]).
@@ -151,21 +203,11 @@ class BasicTrainer(object):
         Returns:
             The sequence-level rewards (microbatch_size, 1).
         """
-        token_rewards = policy_logps - reference_logps
+        mask = self.get_humanline_mask(policy_logps, reference_logps) if self.config.humanline else torch.zeros_like(policy_logps).bool()
+        token_rewards = torch.where(mask, 0, policy_logps - reference_logps)
         
-        if self.config.humanline:
-            beta_rv = torch.distributions.beta.Beta(self.config.humanline_alpha, 1.0)
-            torch.manual_seed(self.seed)
-            beta_sample = beta_rv.sample(policy_logps.shape).to(self.accelerator.device)
-            # constant M for rejection sampling, estimated across microbatch
-            M = torch.max((policy_logps - reference_logps).exp()).item()
-
-            token_mask = (policy_logps - reference_logps).exp() < M * beta_sample
-            normalization_factor = token_mask.float().sum(-1) if length_normalized else 1
-            sequence_rewards = torch.where(token_mask, 0, token_rewards).sum(-1) / normalization_factor
-        else:
-            normalization_factor = (policy_logps.abs() != 0).float().sum(-1) if length_normalized else 1
-            sequence_rewards = token_rewards.sum(-1) / normalization_factor
+        normalization_factor = (token_rewards.abs() != 0).float().sum(-1) if length_normalized else 1
+        sequence_rewards = token_rewards.sum(-1) / normalization_factor
 
         return sequence_rewards
 
@@ -314,10 +356,7 @@ class BasicTrainer(object):
             if self.example_counter < self.num_skip:
                 self.batch_counter += 1
                 self.example_counter += self.config.model.batch_size
-                continue
-
-            if self.config.online:
-                self.sync_reference_with_policy()
+                continue            
             
             # TRAINING
             self.policy.train()
@@ -327,6 +366,10 @@ class BasicTrainer(object):
             with self.accelerator.accumulate(self.policy):
                 batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
                 loss, metrics = self.get_batch_metrics(batch)
+
+                if self.config.sync_every and self.example_counter % self.config.sync_every == 0:
+                    self.sync_reference_with_policy()
+
                 self.accelerator.backward(loss)
             
                 for k, v in metrics.items():
@@ -982,11 +1025,15 @@ class GRPOTrainer(BasicTrainer):
         Returns:
             sequence-level losses (microbatch_size,), sequence-level KL (microbatch_size,), weighted advantages (microbatch_size,)
         """
-        logratio = policy_logps.sum(-1) - reference_logps.sum(-1)
-        KL = (-logratio).exp() + logratio - 1
+        ratio = self.get_ratios(policy_logps, reference_logps, sequence_level=self.config.loss.sequence_level)
+        KL = (-ratio.log()).exp() + ratio.log() - 1
 
-        weighted_adv = advantages * logratio.exp()
-        weighted_adv_clipped =  advantages * logratio.exp().clamp(1 - self.config.loss.epsilon, 1 + self.config.loss.epsilon)
+        if not self.config.loss.sequence_level:
+            advantages = advantages.unsqueeze(-1)
+            group_size = group_size.unsqueeze(-1)
+
+        weighted_adv = advantages * ratio
+        weighted_adv_clipped =  advantages * ratio.clamp(1 - self.config.loss.epsilon, 1 + self.config.loss.epsilon)
         losses = -1 * (torch.min(weighted_adv, weighted_adv_clipped) - self.config.loss.beta * KL) / group_size
 
         return losses, KL.detach(), weighted_adv.detach()
@@ -1202,9 +1249,9 @@ class PPOTrainer(BasicTrainer):
         value_losses = (episode['values'] - batch['discounted_future_rewards'].detach()) ** 2
         critic_loss = 0.5 * masked_mean(value_losses, batch['masks'])
         
-        ratio = torch.exp(episode['logprobs'] - batch['logprobs'])
+        ratio = self.get_ratios(episode['logprobs'], batch['logprobs'])
         policy_losses = -batch['advantages'] * ratio
-        policy_losses_clipped = -batch['advantages'] * torch.clamp(ratio, self.config.loss.cliprange, 1 / self.config.loss.cliprange)
+        policy_losses_clipped = -batch['advantages'] * torch.clamp(ratio, 1 - self.config.loss.cliprange, 1 + self.config.loss.cliprange)
         policy_loss = masked_mean(torch.max(policy_losses, policy_losses_clipped), batch['masks'])
 
         KL_penalty = masked_mean(batch['logprobs'] - episode['logprobs'], batch['masks'])

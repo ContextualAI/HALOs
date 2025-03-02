@@ -6,9 +6,9 @@ beta: 0.10
 # used for clipping the log-ratio, as in PPO
 epsilon: 0.10
 
+# whether to use sequence level rewards
+sequence_level: true
+
 trainer: GRPOTrainer
 
 dataloader: GroupUnpairedPreferenceDataLoader
-
-# online by default
-++online: true

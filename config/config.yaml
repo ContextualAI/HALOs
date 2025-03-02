@@ -75,11 +75,13 @@ load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
 humanline: false
-humanline_alpha: 0.10
-humanline_M: 1.50
+humanline_gamma_R: 0.25
+humanline_gamma_P: 0.75
+humanline_beta_R: 1.0
+humanline_beta_P: 1.0
 
-# whether to do online alignment (is automatically overwritten for ppo/grpo; needs to manually overwritten for others)
-online: false
+# sync reference with policy every X examples (set to 1 for fully online alignment)
+sync_every: null
 
 
 ## DATALOADER SETTINGS

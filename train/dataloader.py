@@ -58,6 +58,7 @@ class DataLoader:
         self.control_tokens = control_tokens
         self.split = split
         self.microbatch_size = microbatch_size
+        self.global_batch_size = int(self.microbatch_size * self.num_processes)
         self.max_length = max_length
         self.max_prompt_length = max_prompt_length
         self.max_prompt_count = max_prompt_count
@@ -251,8 +252,7 @@ class DataLoader:
         if self.num_processes == 1: # for eval usually
             usable_size = len(flat_data)
         else: # to avoid hanging with uneven batches
-            global_batch_size = int(self.num_processes * self.microbatch_size)
-            usable_size = len(flat_data) // global_batch_size * global_batch_size
+            usable_size = len(flat_data) // self.global_batch_size * self.global_batch_size
         
         self.rng.shuffle(flat_data)
         process_data = [d for i, d in enumerate(flat_data[:usable_size]) if i % self.num_processes == self.process_index]
@@ -327,7 +327,10 @@ class SFTDataLoader(DataLoader):
 
     def get_num_training_steps(self):
         """Get the number of training steps."""
-        return len(self.full_data) // self.num_processes
+        if self.n_epochs is None:
+            return self.n_examples // self.global_batch_size
+        else:
+            return int((len(self.full_data) // self.global_batch_size) * self.n_epochs)
 
 
 class ConditionalSFTDataLoader(DataLoader):

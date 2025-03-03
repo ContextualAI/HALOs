@@ -112,7 +112,7 @@ class BasicTrainer(object):
             self.policy,
             self.reference_model,
             self.optimizer,
-            self.scheduler
+            self.scheduler,
         )
 
         if self.reward_model:
@@ -397,10 +397,11 @@ class BasicTrainer(object):
 
                     mean_train_metrics['counters/examples'] = self.example_counter
                     mean_train_metrics['counters/updates'] = self.batch_counter
-                    self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
+                    mean_train_metrics['lr'] = self.scheduler.get_last_lr()[0]
+                    self.accelerator.print(f'train stats after {self.batch_counter} steps: {formatted_dict(mean_train_metrics)}')
 
                     if self.config.wandb.enabled and self.accelerator.is_main_process:
-                        wandb.log(mean_train_metrics, step=self.example_counter)
+                        wandb.log(mean_train_metrics, step=self.batch_counter)
 
                     last_log = time.time()
                     batch_metrics = defaultdict(list)

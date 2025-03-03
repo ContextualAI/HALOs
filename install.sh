@@ -1,7 +1,7 @@
 #!/bin/bash
 
-conda create --name gritkto3 python=3.10.14
-conda activate gritkto3
+conda create --name halos python=3.10.14
+conda activate halos
 
 conda install pip
 pip install packaging ninja

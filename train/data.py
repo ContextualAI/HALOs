@@ -537,3 +537,38 @@ def get_ultrachat(split: str) -> Dataset:
         data[key].remove_extra_spaces()
 
     return data
+
+
+def get_s1k_11(split: str = "train") -> Dataset:
+    """
+    Load the Ultrafeedback (binarized) dataset from Huggingface and convert it into to a Dataset.
+    For this dataset, the SFT text is the preferred response.
+
+    Args:
+        - split: 'train'
+
+    Returns:   
+        A Dataset instance.
+    """
+    if split != 'train':
+        split = 'train'
+        print(f"Warning: s1K-1.1 only has a 'train' split but requested '{split}' split. Using 'train' split.")
+    
+    rank0_print(f'Loading s1K-1.1 (s1k_11) dataset ({split} split) from Huggingface...')
+    dataset = datasets.load_dataset('simplescaling/s1K-1.1', split=split)
+    if on_rank0():
+        dataset = tqdm.tqdm(dataset, desc='Processing s1K-1.1')
+
+    data = Dataset('s1k_11')
+
+    for row in dataset:
+        # Create a unique key for this example (using the question)
+        key = row['question']
+        data[key].prompt = [{"role": "user", "content": row['question']}]
+        data[key].generations.append([{
+            "role": "assistant", 
+            "content": "<|im_start|>think\n" + row['deepseek_thinking_trajectory'] + "\n<|im_start|>answer\n" + row['deepseek_attempt']
+        }])
+        data[key].dataset_name = data.name
+        data[key].sft_index = 0
+    return data

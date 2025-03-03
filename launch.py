@@ -55,7 +55,9 @@ def main(config: DictConfig):
     accelerator = Accelerator(
         project_dir=config.local_run_dir,
         gradient_accumulation_steps=config.model.gradient_accumulation_steps,
-        kwargs_handlers=[ddp_kwargs]
+        kwargs_handlers=[ddp_kwargs],
+        # Without this condition accelerate will step the scheduler for each process see https://github.com/huggingface/accelerate/blob/589fddd317f008e704073c133bc2cb8958f287e6/src/accelerate/scheduler.py#L76 & https://discuss.huggingface.co/t/learning-rate-scheduler-distributed-training/30453/6
+        step_scheduler_with_optimizer=False,
     )
 
     if accelerator.state.fsdp_plugin is not None:
@@ -252,10 +254,11 @@ def main(config: DictConfig):
 
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")
-    optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr)
+    optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr, weight_decay=config.weight_decay, betas=(config.beta1, config.beta2))
 
     warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=config.warmup_steps)
     main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - config.warmup_steps, eta_min=0)
+    print(f"Total training steps: {train_iterator.num_training_steps}")
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[config.warmup_steps])
 
     if config.model.from_checkpoint:

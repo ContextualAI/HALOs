@@ -64,6 +64,15 @@ eval_every: 1024
 # the optimizer to use; should be one of the options listed here: https://pytorch.org/docs/stable/optim.html
 optimizer: AdamW
 
+# the weight decay for the optimizer
+weight_decay: 0.01
+
+# beta1 for AdamW
+beta1: 0.9
+
+# beta2 for AdamW
+beta2: 0.999
+
 # number of linear warmup steps for the learning rate
 warmup_steps: 150
 

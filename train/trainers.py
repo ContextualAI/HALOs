@@ -397,11 +397,11 @@ class BasicTrainer(object):
 
                     mean_train_metrics['counters/examples'] = self.example_counter
                     mean_train_metrics['counters/updates'] = self.batch_counter
-                    mean_train_metrics['lr'] = self.scheduler.get_last_lr()[0]
+                    mean_train_metrics['counters/lr'] = self.scheduler.get_last_lr()[0]
                     self.accelerator.print(f'train stats after {self.batch_counter} steps: {formatted_dict(mean_train_metrics)}')
 
                     if self.config.wandb.enabled and self.accelerator.is_main_process:
-                        wandb.log(mean_train_metrics, step=self.batch_counter)
+                        wandb.log(mean_train_metrics, step=self.example_counter)
 
                     last_log = time.time()
                     batch_metrics = defaultdict(list)
@@ -913,15 +913,13 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         KL = (stats[4] / stats[5].clamp(min=1)).clamp(min=0)
         
         if policy_chosen_logps.shape[0] != 0:
-            chosen_weights = self.config.loss.desirable_weight * (stats[1] / stats[0].clamp(min=1)).item()
-            chosen_losses = chosen_weights * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
+            chosen_losses = self.config.loss.desirable_weight * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            rejected_weights = self.config.loss.undesirable_weight * (stats[3] / stats[2].clamp(min=1)).item()
-            rejected_losses = rejected_weights * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
+            rejected_losses = self.config.loss.undesirable_weight * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
@@ -1362,10 +1360,6 @@ class PPOTrainer(BasicTrainer):
 
     def train(self):
         """Train with PPO."""
-        self.accelerator.print(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
-        self.optimizer = getattr(torch.optim, self.config.optimizer)(self.policy.parameters(), lr=self.config.lr)
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (self.config.warmup_steps + 1)))
-
         self.policy.train()
         self.reference_model.eval()
         

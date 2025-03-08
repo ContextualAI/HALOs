@@ -424,8 +424,12 @@ class ConditionalSFTDataLoader(DataLoader):
     def get_num_training_steps(self):
         max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
         num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
-        num_training_steps = num_pairs * 2
-        return num_training_steps // self.num_processes
+        num_examples = num_pairs * 2
+
+        if self.n_epochs is None:
+            return num_examples // self.global_batch_size
+        else:
+            return int(num_examples // self.global_batch_size) * self.n_epochs
 
 
 class UnpairedPreferenceDataLoader(DataLoader):
@@ -552,8 +556,12 @@ class UnpairedPreferenceDataLoader(DataLoader):
     def get_num_training_steps(self):
         max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
         num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
-        num_training_steps = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
-        return num_training_steps // self.num_processes
+        num_examples = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
+
+        if self.n_epochs is None:
+            return num_examples // self.global_batch_size
+        else:
+            return int(num_examples // self.global_batch_size) * self.n_epochs
     
 
 class GroupUnpairedPreferenceDataLoader(UnpairedPreferenceDataLoader):
@@ -724,5 +732,9 @@ class PairedPreferenceDataLoader(DataLoader):
 
     def get_num_training_steps(self):
         max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
-        all_data = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
-        return all_data // self.num_processes
+        num_examples = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+        
+        if self.n_epochs is None:
+            return num_examples // self.global_batch_size
+        else:
+            return int(num_examples // self.global_batch_size) * self.n_epochs

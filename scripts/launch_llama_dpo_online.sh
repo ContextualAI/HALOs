@@ -31,6 +31,7 @@ init_env() {
     export MASTER_PORT=$(find_free_port | tr -d '\n')
     export HF_DATASETS_OFFLINE=1
     export HF_HUB_OFFLINE=1
+    export HF_ALLOW_CODE_EVAL=1
 }
 
 export -f find_free_port
@@ -122,4 +123,31 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
         break
     fi
 done
+
+# Evaluate the final model
+start_time=\$(date +%s)
+# This only needs to run once to download benchmarks to local cache
+ssh della-pli \"source ~/.bashrc && \
+            conda activate halos && \
+            cd \$HALO_DIR/evals && \
+            python -c \\\"from datasets import load_dataset; ds = load_dataset('openai/openai_humaneval'); ds = load_dataset('TIGER-Lab/MMLU-Pro'); ds = load_dataset('truthful_qa', 'multiple_choice'); ds = load_dataset('evalplus/humanevalplus'); ds = load_dataset('google-research-datasets/mbpp'); ds = load_dataset('Idavidrein/gpqa', 'gpqa_diamond')\\\"
+            \"
+# For GPQA, this dataset is gated, so you will have to accept the terms of use at https://huggingface.co/datasets/Idavidrein/gpqa and login via huggingface-cli login using your HF Hub token before running this task.
+
+lm_eval --model hf \
+    --model_args pretrained=\$CURRENT_CKPT,tokenizer=\$CURRENT_CKPT,parallelize=True \
+    --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot,ifeval,mmlu,mmlu_pro,gpqa_diamond_zeroshot,gpqa_diamond_n_shot,gpqa_diamond_cot_zeroshot,gpqa_diamond_cot_n_shot,humaneval,humaneval_plus,mbpp,mbpp_plus,truthfulqa_mc1,toxigen \
+    --confirm_run_unsafe_code \
+    --batch_size 32 2>&1 | tee logs/\$EXP_NAME_lm_eval.log
+
+python -m train.sample \$CURRENT_CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json
+
+ssh della-pli \"source ~/.bashrc && \
+            conda activate halos && \
+            cd \$HALO_DIR/evals && \
+            alpaca_eval evaluate --is_overwrite_leaderboard=True --model_outputs=alpaca_eval/outputs/\$EXP_NAME.json \"
+
+end_time=\$(date +%s)
+duration=$(echo "scale=2; \$((end_time - start_time)) / 3600" | bc)
+echo \"Evaluation time: \$duration hours.\"
 "

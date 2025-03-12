@@ -123,29 +123,21 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
 done
 
 # Evaluate the final model
-start_time=\$(date +%s)
-# This only needs to run once to download benchmarks to local cache
+python -m train.sample \$CURRENT_CKPT --gpu_count 2 --output_file $(pwd)/evals/outputs/\$EXP_NAME.json
+
 ssh della-pli \"source ~/.bashrc && \
             conda activate halos && \
             cd \$HALO_DIR/evals && \
-            python -c \\\"from datasets import load_dataset; ds = load_dataset('openai/openai_humaneval'); ds = load_dataset('TIGER-Lab/MMLU-Pro'); ds = load_dataset('truthful_qa', 'multiple_choice'); ds = load_dataset('evalplus/humanevalplus'); ds = load_dataset('google-research-datasets/mbpp'); ds = load_dataset('Idavidrein/gpqa', 'gpqa_diamond')\\\"
-            \"
+            python -c \\\"from datasets import load_dataset; ds = load_dataset('openai/openai_humaneval'); ds = load_dataset('TIGER-Lab/MMLU-Pro'); ds = load_dataset('truthful_qa', 'multiple_choice'); ds = load_dataset('evalplus/humanevalplus'); ds = load_dataset('google-research-datasets/mbpp'); ds = load_dataset('Idavidrein/gpqa', 'gpqa_diamond')\\\" \
+            alpaca_eval evaluate --is_overwrite_leaderboard=True --model_outputs=$(pwd)/outputs/\$EXP_NAME.json \"
+
 # For GPQA, this dataset is gated, so you will have to accept the terms of use at https://huggingface.co/datasets/Idavidrein/gpqa and login via huggingface-cli login using your HF Hub token before running this task.
 
 lm_eval --model hf \
     --model_args pretrained=\$CURRENT_CKPT,tokenizer=\$CURRENT_CKPT,parallelize=True \
     --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot,ifeval,mmlu,mmlu_pro,gpqa_diamond_zeroshot,gpqa_diamond_n_shot,gpqa_diamond_cot_zeroshot,gpqa_diamond_cot_n_shot,humaneval,humaneval_plus,mbpp,mbpp_plus,truthfulqa_mc1,toxigen \
     --confirm_run_unsafe_code \
-    --batch_size 32 2>&1 | tee logs/\$EXP_NAME_lm_eval.log
+    --batch_size 32 2>&1 | tee \$HALO_DIR/evals/outputs/\${EXP_NAME}_lm_eval.log
 
-python -m train.sample \$CURRENT_CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json
-
-ssh della-pli \"source ~/.bashrc && \
-            conda activate halos && \
-            cd \$HALO_DIR/evals && \
-            alpaca_eval evaluate --is_overwrite_leaderboard=True --model_outputs=alpaca_eval/outputs/\$EXP_NAME.json \"
-
-end_time=\$(date +%s)
-duration=$(echo "scale=2; \$((end_time - start_time)) / 3600" | bc)
-echo \"Evaluation time: \$duration hours.\"
+python -m evals.scripts.summarize_metrics outputs -o evals/metrics_summary
 "

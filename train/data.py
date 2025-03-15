@@ -29,7 +29,6 @@ import json
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from .utils import rank0_print, on_rank0, delete_dict
-# from utils import rank0_print, on_rank0, delete_dict
 import pandas as pd
 import numpy as np
 import hashlib
@@ -572,43 +571,4 @@ def get_s1k_11(split: str = "train") -> Dataset:
         }])
         data[key].dataset_name = data.name
         data[key].sft_index = 0
-    return data
-
-
-def get_safe_rlhf(split: str = "test") -> Dataset:
-    """
-    Load the PKU-Alignment PKU-SafeRLHF dataset from Huggingface and convert it into to a Dataset.
-    For this dataset, the SFT text is the preferred response.
-    
-    Args:
-        - split: one of 'test', 'train'. Using 'test' for evals by default.
-
-    Returns:   
-        A Dataset instance.
-    """
-    rank0_print(f'Loading PKU-SafeRLHF dataset ({split} split) from Huggingface...')
-    dataset = datasets.load_dataset('PKU-Alignment/PKU-SafeRLHF-single-dimension', split=split)
-    data = Dataset('safe_rlhf')
-
-    if on_rank0():
-        dataset = tqdm.tqdm(dataset, desc='Processing PKU-SafeRLHF-single-dimension')
-
-    for row in dataset:
-        # Create a unique key for this example (using the prompt)
-        conversation = [{"role": "user", "content": row['prompt']}]
-    
-        chosen_response_id = row['better_response_id']
-        chosen_response = row[f'response_{chosen_response_id}']
-        rejected_response = row[f'response_{1 - chosen_response_id}']
-        key = row["prompt"]
-
-        data[key].prompt = conversation
-        data[key].generations.append([{"role": "assistant", "content": chosen_response}])
-        data[key].generations.append([{"role": "assistant", "content": rejected_response}])
-        i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
-        data[key].pairs.append((i, j))
-        data[key].sft_index = i
-        data[key].dataset_name = data.name
-        data[key].remove_extra_spaces()
-
     return data

@@ -90,7 +90,12 @@ class DataLoader:
                         else:
                             raise IOError("unrecognized data type")
                         
-                        self.full_data.update(dataset.data)
+                        for prompt_key, example in dataset.data.items():
+                            if prompt_key in self.full_data:
+                                # Adding multiple generations to the same prompt
+                                self.full_data[prompt_key].generations.extend(example.generations)
+                            else:
+                                self.full_data[prompt_key] = example
                 except:
                     raise IOError(f"could not load {name}; neither a local file or a downloadable dataset supported by train.data")
 
@@ -615,7 +620,7 @@ class GroupUnpairedPreferenceDataLoader(UnpairedPreferenceDataLoader):
                     process_data.append(flat_data[i])
 
                 process_index = (process_index + 1) % self.num_processes
-                
+
         # discard those that cannot be batched
         usable_size = int(len(process_data) // self.microbatch_size * self.microbatch_size)
 

@@ -140,4 +140,28 @@ lm_eval --model hf \
     --batch_size 32 2>&1 | tee \$HALO_DIR/evals/outputs/\${EXP_NAME}_lm_eval.log
 
 python -m evals.scripts.summarize_metrics outputs -o evals/metrics_summary
+
+for TASK in hh safe_rlhf wildbench; do
+    export RLHF_SAMPLES=\$HALO_DIR/evals/outputs/\${EXP_NAME}_\${TASK}.json
+    export BASE_SAMPLES=\$HALO_DIR/evals/outputs/\${EXP_NAME}_\${TASK}_baseline.json
+    export PAIR_REWARDS=\$HALO_DIR/evals/outputs/\${EXP_NAME}_\${TASK}_pair_rewards.json
+    
+    python -m train.sample \$CURRENT_CKPT --datasets \$TASK \
+        --num_samples_per_prompt 1 \
+        --mode test \
+        --gpu_count 4 \
+        --output_file \$RLHF_SAMPLES
+    
+    # Using SFT ckpt as baseline by default
+    python -m train.sample \$SFT_CKPT --datasets \$TASK \
+        --num_samples_per_prompt 1 \
+        --mode test \
+        --gpu_count 4 \
+        --output_file \$BASE_SAMPLES
+    
+    python -m train.label \
+        --second_samples_path \$BASE_SAMPLES \
+        --api_type openai --api_key \$OPENAI \
+        \$RLHF_SAMPLES \$PAIR_REWARDS --feedback_type pairwise
+done
 "

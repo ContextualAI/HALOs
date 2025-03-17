@@ -145,7 +145,6 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: floa
     grouped = defaultdict(list)
     for sample in samples:
         grouped[sample['prompt_id']].append(sample)
-    print(len(grouped))
     
     feedback = []
     for prompt_id, group in grouped.items():
@@ -279,8 +278,10 @@ async def main(args):
             if args.feedback_type == 'binary':
                 feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
             elif args.feedback_type == 'pairwise' and args.second_samples_path is None:
+                # Prompts are sampled from the same model
                 feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
             elif args.feedback_type == 'pairwise' and args.second_samples_path:
+                # Prompts are sampled from two different models, mode='eval' is required
                 feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold, mode='eval')
             else:
                 feedback = processed_samples

@@ -167,7 +167,7 @@ def get_sampled_data(samples_path: str, split: str) -> Dataset:
         data[prompt_key].sft_index = 0
         data[prompt_key].prompt_id = sample['prompt_id']
 
-    return data    
+    return data
 
 
 def get_feedback(feedback_path: str, split: str) -> Dataset:

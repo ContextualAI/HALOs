@@ -72,6 +72,9 @@ class DataLoader:
         self.full_data = {} # a dict of Examples
 
         for name in dataset_names:
+            if process_index == 0:
+                print(f"Loading dataset: {name}")
+                
             if hasattr(data_module, f"get_{name}"):
                 dataset = getattr(data_module, f"get_{name}")(split)
                 self.full_data.update(dataset.data)
@@ -91,6 +94,9 @@ class DataLoader:
                 except:
                     raise IOError(f"could not load {name}; neither a local file or a downloadable dataset supported by train.data")
 
+        if process_index == 0:
+            print(f"Total prompts loaded: {len(self.full_data)}")
+            
         self.num_training_steps = self.get_num_training_steps()
 
     def collate(self, batch: Dict[str, List]) -> Dict:

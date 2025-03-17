@@ -7,9 +7,13 @@ accelerate launch --config_file accelerate_config/fsdp_4gpu.yaml --main_process_
     -m train.label --reward_model_path models/llama3-8B-bt/FINAL outputs.json reward_data.json --feedback_type pairwise
 
 Sample usage for API labeling (accelerate not needed):
-accelerate launch -m train.label --api_type openai --api_key YOUR_KEY --api_model gpt-4 \
+python -m train.label --api_type openai --api_key YOUR_KEY --api_model gpt-4 \
     --label_prompt "Rate this response's quality from 0 to 1:" \
     outputs.json reward_data.json --feedback_type binary
+
+Sample usage for pairwise labeling of two sample files:
+python -m train.label --second_samples_path baseline_samples.json --api_type openai --api_key YOUR_KEY \
+    outputs.json reward_data.json --feedback_type pairwise
 """
 
 import argparse
@@ -27,6 +31,7 @@ from .dataloader import SFTDataLoader
 from collections import defaultdict
 import openai
 import asyncio
+import torch.distributed as dist
 
 
 def process_batch_with_reward_model(
@@ -35,6 +40,7 @@ def process_batch_with_reward_model(
     accelerator: Accelerator
 ) -> List[Dict]:
     """Process a batch through the reward model using the already tokenized sequences."""
+    
     reward_model.eval()
     with torch.no_grad():
         outputs = reward_model(
@@ -53,10 +59,13 @@ def process_batch_with_reward_model(
             'prompt_id': batch['prompt_id'][i],
         }
         processed_samples.append(sample)
-    
+
+    # Gather samples from all processes
     gathered_samples = [None] * accelerator.num_processes
-    torch.distributed.all_gather_object(gathered_samples, processed_samples)
-    
+    dist.all_gather_object(gathered_samples, processed_samples)
+        
+    # Return gathered samples from all processes, not just main process
+    # This ensures samples from all processes are included
     if accelerator.is_main_process:
         return [item for sublist in gathered_samples for item in sublist]
     
@@ -129,17 +138,18 @@ def convert_to_binary_feedback(samples: List[Dict], threshold: float=0.5) -> Lis
     return feedback
 
 
-def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: float=0) -> List[Dict]:
+def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: float=0, mode: str='train') -> List[Dict]:
     """Convert samples to pairwise feedback format."""
     random.seed(seed)
     
     grouped = defaultdict(list)
     for sample in samples:
         grouped[sample['prompt_id']].append(sample)
+    print(len(grouped))
     
     feedback = []
     for prompt_id, group in grouped.items():
-        if len(group) < 2:
+        if len(group) < 2 and mode == "train":
             continue
         
         group.sort(key=lambda x: x['reward'], reverse=True)
@@ -147,11 +157,12 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: floa
         for i in range(len(group) - 1):
             higher_reward, lower_reward = group[i], group[i + 1]
             
-            if higher_reward['reward'] == lower_reward['reward']:
-                continue
-                
-            if threshold and abs(higher_reward['reward'] - lower_reward['reward']) < threshold:
-                continue
+            if mode == "train":
+                if higher_reward['reward'] == lower_reward['reward']:
+                    continue
+
+                if threshold and abs(higher_reward['reward'] - lower_reward['reward']) < threshold:
+                    continue
             
             if random.random() < 0.5:
                 sample_A, sample_B = higher_reward, lower_reward
@@ -181,6 +192,14 @@ async def main(args):
     # Load samples
     with open(args.samples_path, 'r') as f:
         samples = json.load(f)
+
+    # If second samples file provided, merge them for pairwise comparison
+    if args.second_samples_path:
+        with open(args.second_samples_path, 'r') as f:
+            second_samples = json.load(f)
+        for sample in second_samples:
+            sample['sample_id'] += 1
+        samples.extend(second_samples)
     
     if args.api_type:
         # API-based labeling path
@@ -211,11 +230,15 @@ async def main(args):
             local_files_only=True,
             trust_remote_code=True
         )
-        reward_model = accelerator.prepare(reward_model)
-
+        
         # Initialize the dataloader for reward model processing
+        if args.second_samples_path:
+            names = [args.samples_path, args.second_samples_path]
+        else:
+            names = [args.samples_path]
+        
         dataloader = SFTDataLoader(
-            dataset_names=[args.samples_path],
+            dataset_names=names,
             tokenizer=tokenizer,
             process_index=accelerator.process_index,
             num_processes=accelerator.num_processes,
@@ -224,14 +247,27 @@ async def main(args):
             max_length=args.max_length,
             max_prompt_length=args.max_prompt_length,
             n_epochs=1,
-            seed=args.seed
+            seed=args.seed,
         )
+        dataloader, reward_model = accelerator.prepare(dataloader, reward_model)
+        
+        # Initialize distributed setup if not already done
+        if accelerator.num_processes > 1 and not dist.is_initialized():
+            accelerator.wait_for_everyone()
+            
+            if accelerator.is_main_process:
+                dist.init_process_group(backend='nccl')
         
         processed_samples = []
         for batch in tqdm(dataloader, disable=not accelerator.is_main_process):
+            batch = {k: v.to(accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             batch_samples = process_batch_with_reward_model(batch, reward_model, accelerator)
+            
             if accelerator.is_main_process:
                 processed_samples.extend(batch_samples)
+        
+        # Wait for all processes to complete
+        accelerator.wait_for_everyone()
 
     # Set up output writer
     if accelerator.is_main_process:
@@ -242,8 +278,10 @@ async def main(args):
             # Process and write feedback
             if args.feedback_type == 'binary':
                 feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
-            elif args.feedback_type == 'pairwise':
+            elif args.feedback_type == 'pairwise' and args.second_samples_path is None:
                 feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
+            elif args.feedback_type == 'pairwise' and args.second_samples_path:
+                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold, mode='eval')
             else:
                 feedback = processed_samples
                 for x in feedback:
@@ -258,8 +296,8 @@ async def main(args):
     
     # Clean up distributed training resources if using reward model
     accelerator.end_training()
-    if torch.distributed.is_initialized():
-        torch.distributed.destroy_process_group()
+    if dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -268,6 +306,7 @@ if __name__ == "__main__":
     # Input/output arguments
     parser.add_argument("samples_path", type=str, help="Path to the JSON file containing samples")
     parser.add_argument("output_path", type=str, help="Path to save the feedback file")
+    parser.add_argument("--second_samples_path", type=str, default=None, help="Optional second samples file for pairwise comparison")
     
     # Labeling method arguments
     labeling_group = parser.add_mutually_exclusive_group(required=True)

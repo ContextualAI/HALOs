@@ -36,7 +36,7 @@ from typing import Optional, Set
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, ConstantLR, LambdaLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LambdaLR
 
 
 def main(config: DictConfig):

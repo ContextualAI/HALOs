@@ -327,7 +327,7 @@ class SFTDataLoader(DataLoader):
 
     def get_num_training_steps(self):
         """Get the number of training steps."""
-        if self.n_epochs is None:
+        if self.n_examples:
             return self.n_examples // self.global_batch_size
         else:
             return int((len(self.full_data) // self.global_batch_size) * self.n_epochs)
@@ -422,9 +422,12 @@ class ConditionalSFTDataLoader(DataLoader):
                 break
 
     def get_num_training_steps(self):
-        max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
-        num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
-        num_examples = num_pairs * 2
+        if self.n_examples:
+            num_examples = self.n_examples
+        else:
+            max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
+            num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+            num_examples = num_pairs * 2
 
         if self.n_epochs is None:
             return num_examples // self.global_batch_size
@@ -554,9 +557,12 @@ class UnpairedPreferenceDataLoader(DataLoader):
                 break
 
     def get_num_training_steps(self):
-        max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
-        num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
-        num_examples = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
+        if self.n_examples:
+            num_examples = self.n_examples
+        else:
+            max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
+            num_pairs = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+            num_examples = num_pairs * self.kwargs.get('frac_unique_desirable', 1.0) + num_pairs * self.kwargs.get('frac_unique_undesirable', 1.0)
 
         if self.n_epochs is None:
             return num_examples // self.global_batch_size
@@ -731,8 +737,11 @@ class PairedPreferenceDataLoader(DataLoader):
                 break
 
     def get_num_training_steps(self):
-        max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
-        num_examples = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
+        if self.n_examples:
+            num_examples = self.n_examples
+        else:
+            max_prompt_count = min(float("inf"), self.max_prompt_count) if self.max_prompt_count else float("inf")
+            num_examples = int(sum(min(max_prompt_count, len(example.pairs)) for _, example in self.full_data.items()))
         
         if self.n_epochs is None:
             return num_examples // self.global_batch_size

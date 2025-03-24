@@ -365,21 +365,23 @@ class BasicTrainer(object):
             
             with self.accelerator.accumulate(self.policy):
                 batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                loss, metrics = self.get_batch_metrics(batch)
+
+                for i in range(self.config.humanline_iters if self.config.humanline else 1):
+                    loss, metrics = self.get_batch_metrics(batch)
+                    self.accelerator.backward(loss)
+                
+                    for k, v in metrics.items():
+                        batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
+
+                    grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+                    batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
+                    self.optimizer.step()
+                    self.optimizer.zero_grad()
 
                 if self.config.sync_every and self.example_counter % self.config.sync_every == 0:
                     self.sync_reference_with_policy()
 
-                self.accelerator.backward(loss)
-            
-                for k, v in metrics.items():
-                    batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
-
-                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
-                self.optimizer.step()
                 self.scheduler.step()
-                self.optimizer.zero_grad()
                 accumulated += 1
                 
                 step_time = time.time() - start_time

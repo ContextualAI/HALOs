@@ -87,8 +87,9 @@ load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
 humanline: false
-humanline_gamma_R: 0.25
-humanline_gamma_P: 0.75
+humanline_iters: 3
+humanline_gamma_R: 0.01
+humanline_gamma_P: 0.50
 humanline_beta_R: 1.0
 humanline_beta_P: 1.0
 

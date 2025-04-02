@@ -36,7 +36,7 @@ from typing import Optional, Set
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, ConstantLR, LambdaLR
 
 
 def main(config: DictConfig):
@@ -257,10 +257,10 @@ def main(config: DictConfig):
 
     warmup_steps = train_iterator.num_training_steps * config.warmup
     warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
-    main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - warmup_steps, eta_min=0)
-    print(f"Total training steps: {train_iterator.num_training_steps}")
+    main_scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    accelerator.print(f"Total training steps: {train_iterator.num_training_steps}")
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_steps])
-
+    
     if config.model.from_checkpoint:
         optimizer_state = optimizer.state_dict()
         optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt")))
@@ -268,14 +268,24 @@ def main(config: DictConfig):
 
         scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
         scheduler.load_state_dict(scheduler_state)
+        del optimizer_state, scheduler_state
 
         if config.online:
             num_skip = 0  # only resume scheduler and optimizer if doing online alignment
         else:
             num_skip = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0)
+            accelerator.print(f"Skipping {num_skip} samples model has been trained on.")
     else:
         num_skip = 0
-
+    
+    torch.cuda.empty_cache()
+    
+    # For DPOTrainer, prepare policy and optimizer across all GPUs to avoid OOM on master node
+    if config.loss.trainer == "DPOTrainer":
+        # Distribute model, optimizer, and scheduler across GPUs
+        accelerator.print("Preparing DPOTrainer components across GPUs")
+        policy, optimizer = accelerator.prepare(policy, optimizer)
+    
     # Load explicit reward model if necessary (e.g., for PPO)
     if config.model.reward_model.path:
         accelerator.print(f'Loading reward model from {config.model.reward_model.path}')

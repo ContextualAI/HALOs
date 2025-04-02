@@ -27,7 +27,7 @@ import re
 import random
 import json
 from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from .utils import rank0_print, on_rank0, delete_dict
 import pandas as pd
 import numpy as np
@@ -66,6 +66,24 @@ class Example:
             self.prompt_id = hashlib.sha256(content.encode()).hexdigest()
         
         super().__setattr__(name, value)
+    
+    def __getitem__(self, key):
+        """
+        Get an attribute of the Example by its key.
+        
+        Args:
+            key: The attribute name to retrieve
+            
+        Returns:
+            The value of the attribute
+            
+        Raises:
+            AttributeError: If the attribute doesn't exist
+        """
+        if hasattr(self, key):
+            return getattr(self, key)
+        else:
+            raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{key}'")
 
     def num_generations(self):
         return len(self.generations)
@@ -646,3 +664,157 @@ def get_wildbench(split: str = "test") -> Dataset:
             data[key].remove_extra_spaces()
 
     return data
+
+
+def get_tulu_v25(split: str, 
+                 only_shp=False, 
+                 only_stackexchange=False, 
+                 only_prm=False, 
+                 only_arena23=False, 
+                 only_arena24=False, 
+                 only_hh=False, 
+                 only_helpsteer=False, 
+                 only_alpaca=False, 
+                 only_alpaca_gpt4=False,
+                 only_capybara=False,
+                 only_orca=False, 
+                 only_nectar=False, 
+                 only_ultra=False, 
+                 only_ultra_fg=False) -> Dataset:
+    """
+    Load the allenai/tulu-2.5-preference-data from Huggingface and convert it into to a Dataset.
+    For this dataset, the SFT text is the preferred response.
+    
+    Args:
+        - split: 'all'. 
+        This dataset doesn't have a test split. Load all splits for training by default.
+
+    Returns:   
+        A Dataset instance.
+    """
+    rank0_print(f'Loading Tulu v2.5 preference dataset ({split} splits) from Huggingface...')
+    hf_name = 'allenai/tulu-2.5-preference-data'
+    
+    if only_shp:
+        dataset = datasets.load_dataset(hf_name, split="shp_2")
+        data = Dataset('tulu_v25_shp')
+    elif only_stackexchange:
+        dataset = datasets.load_dataset(hf_name, split="stack_exchange_paired")
+        data = Dataset('tulu_v25_stackexchange')
+    elif only_hh:
+        dataset = datasets.load_dataset(hf_name, split="hh_rlhf")
+        data = Dataset('tulu_v25_hh')
+    elif only_ultra:
+        dataset = datasets.load_dataset(hf_name, split="ultrafeedback_overall")
+        data = Dataset('tulu_v25_ultra')
+    elif only_ultra_fg:
+        dataset = datasets.load_dataset(hf_name, split="ultrafeedback_mean_aspects")
+        data = Dataset('tulu_v25_ultra_fg')
+    elif only_prm:
+        dataset = datasets.load_dataset(hf_name, split="prm800k_pairs_phase2")
+        data = Dataset('tulu_v25_prm')
+    elif only_arena23:
+        dataset = datasets.load_dataset(hf_name, split="chatbot_arena_2023")
+        data = Dataset('tulu_v25_arena23')
+    elif only_arena24:
+        dataset = datasets.load_dataset(hf_name, split="chatbot_arena_2024")
+        data = Dataset('tulu_v25_arena24')
+    elif only_helpsteer:
+        dataset = datasets.load_dataset(hf_name, split="helpsteer")
+        data = Dataset('tulu_v25_helpsteer')
+    elif only_alpaca_gpt4:
+        dataset = datasets.load_dataset(hf_name, split="alpaca_farm_gpt4_pref")
+        data = Dataset('tulu_v25_af_gpt4')
+    elif only_alpaca:
+        dataset = datasets.load_dataset(hf_name, split="alpaca_farm_human_pref")
+        data = Dataset('tulu_v25_af_human')
+    elif only_capybara:
+        dataset = datasets.load_dataset(hf_name, split="capybara")
+        data = Dataset('tulu_v25_capybara')
+    elif only_orca:
+        dataset = datasets.load_dataset(hf_name, split="orca_dpo_pairs")
+        data = Dataset('tulu_v25_orca')
+    elif only_nectar:
+        dataset = datasets.load_dataset(hf_name, split="nectar")
+        data = Dataset('tulu_v25_nectar')
+    else:
+        rank0_print(f'Loading {hf_name} dataset ({split} split) from Huggingface...')
+        dataset = datasets.load_dataset(hf_name, split=split)
+        data = Dataset('tulu_v25_{split}')
+
+    # Create progress bar for all samples
+    if on_rank0():
+        pbar = tqdm.tqdm(total=len(dataset), desc=f'Processing Tulu v2.5 ({split} split)')
+    
+    for row in dataset:
+        conversation = row["chosen"][:-1]
+        prompt_key = ' '.join([turn['content'] for turn in conversation])  # Use full conversation as key
+        i, j = data[prompt_key].num_generations(), data[prompt_key].num_generations() + 1
+        
+        data[prompt_key].prompt = conversation
+        data[prompt_key].generations.append(row["chosen"][-1:])
+        data[prompt_key].generations.append(row["rejected"][-1:])
+        data[prompt_key].pairs.append((i, j))
+        data[prompt_key].sft_index = 0
+        data[prompt_key].dataset_name = f'tulu_v25_{split}'
+        data[prompt_key].remove_extra_spaces()
+        if on_rank0():
+            pbar.update(1)
+    
+    return data
+
+
+def get_tulu_v25_shp(split: str) -> Dataset:
+    return get_tulu_v25(split="shp_2", only_shp=True)
+
+
+def get_tulu_v25_stackexchange(split: str) -> Dataset:
+    return get_tulu_v25(split="stack_exchange_paired", only_stackexchange=True)
+
+
+def get_tulu_v25_hh(split: str) -> Dataset:
+    return get_tulu_v25(split="hh_rlhf", only_hh=True)
+
+
+def get_tulu_v25_ultra(split: str) -> Dataset:
+    return get_tulu_v25(split="ultrafeedback_overall", only_ultra=True)
+
+
+def get_tulu_v25_ultra_fg(split: str) -> Dataset:
+    return get_tulu_v25(split="ultrafeedback_mean_aspects", only_ultra_fg=True)
+
+
+def get_tulu_v25_prm(split: str) -> Dataset:
+    return get_tulu_v25(split="prm800k_pairs_phase2", only_prm=True)
+
+
+def get_tulu_v25_arena23(split: str) -> Dataset:
+    return get_tulu_v25(split="chatbot_arena_2023", only_arena23=True)
+
+
+def get_tulu_v25_arena24(split: str) -> Dataset:
+    return get_tulu_v25(split="chatbot_arena_2024", only_arena24=True)
+
+
+def get_tulu_v25_helpsteer(split: str) -> Dataset:
+    return get_tulu_v25(split="helpsteer", only_helpsteer=True)
+
+
+def get_tulu_v25_af_gpt4(split: str) -> Dataset:
+    return get_tulu_v25(split="alpaca_farm_gpt4_pref", only_alpaca_gpt4=True)
+
+
+def get_tulu_v25_af_human(split: str) -> Dataset:
+    return get_tulu_v25(split="alpaca_farm_gpt4_human", only_alpaca=True)
+
+
+def get_tulu_v25_capybara(split: str) -> Dataset:
+    return get_tulu_v25(split="capybara", only_capybara=True)
+
+
+def get_tulu_v25_orca(split: str) -> Dataset:
+    return get_tulu_v25(split="orca_dpo_pairs", only_orca=True)
+
+
+def get_tulu_v25_nectar(split: str) -> Dataset:
+    return get_tulu_v25(split="nectar", only_nectar=True)

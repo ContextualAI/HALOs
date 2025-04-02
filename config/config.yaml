@@ -102,7 +102,6 @@ humanline_beta_P: 1.0
 # sync reference with policy every X examples (set to 1 for fully online alignment)
 sync_reference: false
 
-
 ## DATALOADER SETTINGS
 
 # what fraction of undesirable data should be kept

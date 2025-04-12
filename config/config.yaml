@@ -93,16 +93,14 @@ load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
 humanline: false
-humanline_iters: 3
+humanline_iters: 1
 humanline_gamma_R: 0.01
 humanline_gamma_P: 0.50
 humanline_beta_R: 1.0
 humanline_beta_P: 1.0
 
 # sync reference with policy every X examples (set to 1 for fully online alignment)
-online: false
-
-sync_every: null
+sync_reference: false
 
 
 ## DATALOADER SETTINGS

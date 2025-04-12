@@ -371,7 +371,11 @@ class BasicTrainer(object):
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
+<<<<<<< HEAD
                     if self.config.sync_reference or self.config.humanline or self.config.online:
+=======
+                    if self.config.sync_reference or self.config.humanline:
+>>>>>>> a2a0a85 (finalize humanline design)
                         self.sync_reference_with_policy()
 
                 self.scheduler.step()

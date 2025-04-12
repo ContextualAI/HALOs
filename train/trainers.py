@@ -204,7 +204,7 @@ class BasicTrainer(object):
             The sequence-level rewards (microbatch_size, 1).
         """
         mask = self.get_humanline_mask(policy_logps, reference_logps) if self.config.humanline else torch.zeros_like(policy_logps).bool()
-        token_rewards = torch.where(mask, 0, policy_logps - reference_logps)
+        token_rewards = torch.where(mask, (policy_logps - reference_logps).detach(), policy_logps - reference_logps)
         
         normalization_factor = (token_rewards.abs() != 0).float().sum(-1) if length_normalized else 1
         sequence_rewards = token_rewards.sum(-1) / normalization_factor
@@ -378,8 +378,8 @@ class BasicTrainer(object):
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
-                if self.config.sync_every and self.example_counter % self.config.sync_every == 0:
-                    self.sync_reference_with_policy()
+                    if self.config.sync_reference or self.config.humanline:
+                        self.sync_reference_with_policy()
 
                 self.scheduler.step()
                 accumulated += 1

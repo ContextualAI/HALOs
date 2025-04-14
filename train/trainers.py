@@ -178,7 +178,7 @@ class BasicTrainer(object):
         logratio = policy_logps - reference_logps
 
         if self.config.humanline:
-            logratio = torch.where(self.get_humanline_mask(policy_logps, reference_logps), 0, logratio)
+            logratio = torch.where(self.get_humanline_mask(policy_logps, reference_logps), logratio.detach(), logratio)
 
         if sequence_level:
             logratio = logratio.sum(-1)
@@ -592,14 +592,72 @@ class SFTTrainer(BasicTrainer):
             policy_chosen_logps = policy_chosen_logps.view(-1)
             losses = -policy_chosen_logps
 
+        # Calculate number of non-masked tokens in the current process for normalization
+        num_tokens = (policy_chosen_logps != 0).sum().detach()
+        
+        # Normalize the loss by the number of tokens before returning for backpropagation
+        # Adding a small epsilon to avoid division by zero
+        normalized_loss = losses.sum() / (num_tokens + 1e-8)
+
         # Gather losses and logps from all processes
-        total_nonzero_elements = self.accelerator.gather((policy_chosen_logps != 0).sum().detach()).sum()
-        metrics[f'logps_{mode}/chosen'] = self.accelerator.gather(policy_chosen_logps.detach()).sum() / total_nonzero_elements
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.sum().detach()).sum() / total_nonzero_elements
+        metrics[f'tokens/{mode}'] = self.accelerator.gather(num_tokens).sum()
+        metrics[f'logps/{mode}'] = self.accelerator.gather(policy_chosen_logps.detach().sum() / num_tokens)
+        metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
 
         del policy_chosen_logits, policy_chosen_logps
 
-        return losses.sum(), metrics
+        return normalized_loss, metrics
+
+
+class HumanlineSFTTrainer(BasicTrainer):
+    use_reference_model = True
+
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
+        """Compute the loss and other metrics for the given batch of inputs.
+        
+        Args:
+            batch: dictionary of inputs for the batch (should contain 'target_attention_mask', 'target_input_input_ids', 
+                'target_labels' where 'target' corresponds to the SFT example)
+            mode: one of 'train', 'eval', 'sample'
+        """
+        metrics = {}
+        
+        with self.accelerator.autocast():
+            policy_chosen_logits = self.policy(
+                batch['target_combined_input_ids'], 
+                attention_mask=batch['target_combined_attention_mask'],
+            ).logits.to(self.policy_dtype)
+            
+            policy_chosen_logps = self.get_batch_logps(policy_chosen_logits, batch['target_labels'])
+            policy_chosen_logps = policy_chosen_logps.view(-1)
+
+            with torch.no_grad():
+                reference_chosen_logits = self.reference_model(
+                    batch['target_combined_input_ids'], 
+                    attention_mask=batch['target_combined_attention_mask'],
+                ).logits.to(self.policy_dtype)
+                
+                reference_chosen_logps = self.get_batch_logps(reference_chosen_logits, batch['target_labels'])
+                reference_chosen_logps = reference_chosen_logps.view(-1)
+
+            mask = self.get_humanline_mask(policy_chosen_logps, reference_chosen_logps)
+            losses = torch.where(mask, -policy_chosen_logps.detach(), -policy_chosen_logps)
+
+        # Calculate number of non-masked tokens in the current process for normalization
+        num_tokens = (policy_chosen_logps != 0).sum().detach()
+        
+        # Normalize the loss by the number of tokens before returning for backpropagation
+        # Adding a small epsilon to avoid division by zero
+        normalized_loss = losses.sum() / (num_tokens + 1e-8)
+
+        # Gather losses and logps from all processes
+        metrics[f'tokens/{mode}'] = self.accelerator.gather(num_tokens).sum()
+        metrics[f'logps/{mode}'] = self.accelerator.gather(policy_chosen_logps.detach().sum() / num_tokens)
+        metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
+
+        del policy_chosen_logits, policy_chosen_logps, reference_chosen_logits, reference_chosen_logps, mask
+
+        return normalized_loss, metrics
 
 
 class UnpairedPreferenceTrainer(BasicTrainer):

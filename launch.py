@@ -257,7 +257,12 @@ def main(config: DictConfig):
 
     warmup_steps = train_iterator.num_training_steps * config.warmup
     warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
-    main_scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+
+    if config.loss.dataloader == "SFTDataLoader":
+        main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - warmup_steps, eta_min=0)
+    else:
+        main_scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    
     print(f"Total training steps: {train_iterator.num_training_steps}")
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_steps])
 

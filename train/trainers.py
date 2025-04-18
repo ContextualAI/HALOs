@@ -589,24 +589,16 @@ class SFTTrainer(BasicTrainer):
             ).logits.to(self.policy_dtype)
             
             policy_chosen_logps = self.get_batch_logps(policy_chosen_logits, batch['target_labels'])
-            policy_chosen_logps = policy_chosen_logps.view(-1)
-            losses = -policy_chosen_logps
+            token_mask = (policy_chosen_logps != 0).float().detach()
 
-        # Calculate number of non-masked tokens in the current process for normalization
-        num_tokens = (policy_chosen_logps != 0).sum().detach()
-        
         # Normalize the loss by the number of tokens before returning for backpropagation
-        # Adding a small epsilon to avoid division by zero
-        normalized_loss = losses.sum() / (num_tokens + 1e-8)
+        normalized_loss = -policy_chosen_logps / token_mask.sum()
 
         # Gather losses and logps from all processes
-        metrics[f'tokens/{mode}'] = self.accelerator.gather(num_tokens).sum()
-        metrics[f'logps/{mode}'] = self.accelerator.gather(policy_chosen_logps.detach().sum() / num_tokens)
+        metrics[f'logps/{mode}'] = self.accelerator.gather((policy_chosen_logps * token_mask).detach().sum() / token_mask.sum())
         metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
 
-        del policy_chosen_logits, policy_chosen_logps
-
-        return normalized_loss, metrics
+        return normalized_loss.sum(), metrics
 
 
 class HumanlineSFTTrainer(BasicTrainer):
@@ -630,6 +622,7 @@ class HumanlineSFTTrainer(BasicTrainer):
             
             policy_chosen_logps = self.get_batch_logps(policy_chosen_logits, batch['target_labels'])
             policy_chosen_logps = policy_chosen_logps.view(-1)
+            token_mask = (policy_chosen_logps != 0).float().detach()
 
             with torch.no_grad():
                 reference_chosen_logits = self.reference_model(
@@ -640,24 +633,17 @@ class HumanlineSFTTrainer(BasicTrainer):
                 reference_chosen_logps = self.get_batch_logps(reference_chosen_logits, batch['target_labels'])
                 reference_chosen_logps = reference_chosen_logps.view(-1)
 
-            mask = self.get_humanline_mask(policy_chosen_logps, reference_chosen_logps)
-            losses = torch.where(mask, -policy_chosen_logps.detach(), -policy_chosen_logps)
-
-        # Calculate number of non-masked tokens in the current process for normalization
-        num_tokens = (policy_chosen_logps != 0).sum().detach()
-        
-        # Normalize the loss by the number of tokens before returning for backpropagation
-        # Adding a small epsilon to avoid division by zero
-        normalized_loss = losses.sum() / (num_tokens + 1e-8)
+            humanline_mask = self.get_humanline_mask(policy_chosen_logps, reference_chosen_logps)
+            normalized_loss = torch.where(humanline_mask, -policy_chosen_logps.detach(), -policy_chosen_logps) / token_mask.sum()
 
         # Gather losses and logps from all processes
-        metrics[f'tokens/{mode}'] = self.accelerator.gather(num_tokens).sum()
-        metrics[f'logps/{mode}'] = self.accelerator.gather(policy_chosen_logps.detach().sum() / num_tokens)
+        metrics[f'tokens/{mode}'] = self.accelerator.gather(token_mask.sum()).sum()
+        metrics[f'logps/{mode}'] = self.accelerator.gather((policy_chosen_logps * token_mask).detach().sum() / token_mask.sum())
         metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
 
-        del policy_chosen_logits, policy_chosen_logps, reference_chosen_logits, reference_chosen_logps, mask
+        del policy_chosen_logits, policy_chosen_logps, reference_chosen_logits, reference_chosen_logps, humanline_mask, token_mask
 
-        return normalized_loss, metrics
+        return normalized_loss.sum(), metrics
 
 
 class UnpairedPreferenceTrainer(BasicTrainer):

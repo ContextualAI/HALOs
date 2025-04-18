@@ -503,7 +503,7 @@ def get_ultrabin(split: str) -> Dataset:
         data[key].generations.append([{"role": "assistant", "content": rejected_response}])
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
-        data[key].sft_index = i  # The chosen response is the SFT target
+        data[key].sft_index = 0
         data[key].dataset_name = data.name
         data[key].remove_extra_spaces()
 
@@ -527,11 +527,11 @@ def get_ultrafeedback_armorm(split: str) -> Dataset:
 
         # Update the dataset
         data[key].prompt = conversation
-        data[key].generations.append([row['chosen'][-1]])
-        data[key].generations.append([row['rejected'][-1]])
+        data[key].generations.append(row['chosen'][1:])
+        data[key].generations.append(row['rejected'][1:])
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
-        data[key].sft_index = i  # The chosen response is the SFT target
+        data[key].sft_index = 0
         data[key].dataset_name = data.name
         data[key].remove_extra_spaces()
 

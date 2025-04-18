@@ -292,25 +292,16 @@ class SFTDataLoader(DataLoader):
             batch = []
 
             for example in self.get_process_data():
-                # Assuming example.prompt is now a list of conversation turns
-                conversation = example.prompt
-                if not isinstance(conversation[0], dict):
-                    # Convert to the new format if it's not already
-                    conversation = [{"role": "user", "content": conversation[0]}]
-                    for i, message in enumerate(conversation[1:]):
-                        role = "assistant" if i % 2 == 0 else "user"
-                        conversation.append({"role": role, "content": message})
-
-                # Get the target generation (last turn from assistant)
-                target_generation = example.generations[example.sft_index]
+                # Get the target completion
+                completion = example.generations[example.sft_index]
 
                 # Add control token if specified
                 if self.control_tokens.get('chosen'):
-                    target_generation = self.control_tokens['chosen'] + target_generation
+                    completion[-1]['content'] = self.control_tokens['chosen'] + completion[-1]['content']
 
                 batch_element = self.tokenize_batch_element(
-                    conversation,
-                    target_generation,
+                    example.prompt,
+                    completion,
                 )
                 batch_element['original_prompt'] = example.original_prompt
                 batch_element['prompt_id'] = example.prompt_id

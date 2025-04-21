@@ -23,6 +23,7 @@ Note that the keys 'instruction', 'output' are necessary to run Alpacaeval on th
 """
 import argparse
 import re
+import sys
 import inspect
 from vllm import LLM, SamplingParams
 from transformers import AutoTokenizer
@@ -76,35 +77,26 @@ def main(args):
     )
 
     prompt_idx = 0
-    num_skip = args.num_skip
 
     # Open the output file and create a streaming writer
     with open(args.output_file, 'w') as f:
         writer = StreamingJSONWriter(f)
 
-        n_examples = args.num_prompts + args.num_skip if args.num_prompts else None # IMPORTANT: account for skipped examples
         # Initialize the SFTDataLoader
         dataloader = SFTDataLoader(
             dataset_names=args.datasets,
             tokenizer=tokenizer,
             split=args.split,
             max_prompt_length=args.max_prompt_length,
-            n_epochs=1,
+            n_epochs=args.num_epochs,
             seed=args.seed,
-            microbatch_size=args.batch_size,
-            n_examples=n_examples, 
+            microbatch_size=(args.num_prompts if args.num_prompts else args.batch_size),
+            n_examples=args.num_prompts, 
+            num_skip=args.num_skip,
         )
         
         # Process the dataset in batches
         for batch in dataloader:
-            batch['prompt_text'] = batch['prompt_text'][num_skip:]
-            if len(batch['prompt_text']) == 0:
-                num_skip -= args.batch_size
-                num_skip = max(num_skip, 0)
-                continue
-            else:
-                num_skip = 0
-
             # prompt_text has already had the chat template applied
             responses = llm.generate(batch['prompt_text'], sampling_params)
 
@@ -135,6 +127,11 @@ def main(args):
     destroy_model_parallel()
     destroy_distributed_environment()
 
+    if prompt_idx == 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Sample from a local model using vllm for AlpacaEval")
     parser.add_argument("model_path", type=str, help="Path to the local model folder or the Huggingface repo")
@@ -153,6 +150,7 @@ if __name__ == "__main__":
     parser.add_argument("--mode", type=str, default="alpacaeval", help="mode")
     parser.add_argument("--num_prompts", type=int, default=None, help="number of prompts to sample from")
     parser.add_argument("--num_skip", type=int, default=0, help="number of prompts to skip at the beginning")
+    parser.add_argument("--num_epochs", type=int, default=1, help="number of times to pass through the data (in order)")
 
     args = parser.parse_args()
     main(args)

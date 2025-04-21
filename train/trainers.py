@@ -71,7 +71,6 @@ class BasicTrainer(object):
                  scheduler: torch.optim.lr_scheduler.LRScheduler,
                  policy: nn.Module, 
                  reference_model: Optional[nn.Module] = None,
-                 num_skip=0,
                  **kwargs):
         """A trainer for a language model, supporting either SFT, HALO, or offline PPO training."""
         self.seed = config.seed
@@ -87,7 +86,6 @@ class BasicTrainer(object):
         self.tokenizer = tokenizer
         self.example_counter = 0
         self.batch_counter = 0
-        self.num_skip = num_skip
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
@@ -351,12 +349,7 @@ class BasicTrainer(object):
                         self.save(output_dir, results['results'], final_save=False)
 
                 self.accelerator.print(results['results'])
-                delete_dicts(results)
-
-            if self.example_counter < self.num_skip:
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
-                continue            
+                delete_dicts(results) 
             
             # TRAINING
             self.policy.train()
@@ -378,7 +371,7 @@ class BasicTrainer(object):
                     self.optimizer.step()
                     self.optimizer.zero_grad()
 
-                    if self.config.sync_reference or self.config.humanline:
+                    if self.config.sync_reference or self.config.humanline or self.config.online:
                         self.sync_reference_with_policy()
 
                 self.scheduler.step()
@@ -1427,11 +1420,6 @@ class PPOTrainer(BasicTrainer):
 
                 self.accelerator.print(results['results'])
                 delete_dicts(results)
-
-            if self.example_counter < self.num_skip:
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
-                continue
 
             # TRAINING
             start_time = time.time()

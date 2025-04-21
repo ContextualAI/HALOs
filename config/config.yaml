@@ -99,9 +99,11 @@ humanline_gamma_P: 0.50
 humanline_beta_R: 1.0
 humanline_beta_P: 1.0
 
-# sync reference with policy every X examples (set to 1 for fully online alignment)
+# sync reference with policy every update
 sync_reference: false
 
+# online training
+online: false
 
 ## DATALOADER SETTINGS
 

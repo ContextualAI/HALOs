@@ -46,6 +46,7 @@ class DataLoader:
                  max_prompt_count: int = None,
                  n_epochs: Optional[int] = None,
                  n_examples: Optional[int] = None,
+                 num_skip: int = 0,
                  seed: int = 0,
                  control_tokens: Dict = {},
                  **kwargs):
@@ -68,6 +69,7 @@ class DataLoader:
         self.n_epochs = n_epochs
         self.epoch_idx = 0
         self.n_examples = n_examples
+        self.num_skip = num_skip
         
         self.full_data = {} # a dict of Examples
 
@@ -281,6 +283,10 @@ class SFTDataLoader(DataLoader):
             batch = []
 
             for example in self.get_process_data():
+                if self.num_skip > 0:
+                    self.num_skip -= self.num_processes
+                    continue
+
                 # Get the target completion
                 completion = example.generations[example.sft_index]
 
@@ -371,6 +377,10 @@ class ConditionalSFTDataLoader(DataLoader):
             batch = []
 
             for example, generation, status in self.get_process_data():
+                if self.num_skip > 0:
+                    self.num_skip -= self.num_processes
+                    continue
+
                 # Convert prompt to conversation format if it's not already
                 conversation = example.prompt
                 if not isinstance(conversation[0], dict):
@@ -505,6 +515,10 @@ class UnpairedPreferenceDataLoader(DataLoader):
             example_queue = []
 
             for example, generation, status, score in self.get_process_data():
+                if self.num_skip > 0:
+                    self.num_skip -= self.num_processes
+                    continue
+
                 batch_element = self.tokenize_batch_element(example.prompt, generation, prefix='target')
                 batch_element['status'] = status 
                 batch_element['conversation'] = example.prompt
@@ -702,6 +716,10 @@ class PairedPreferenceDataLoader(DataLoader):
             batch = []
 
             for example, (i, j) in self.get_process_data():
+                if self.num_skip > 0:
+                    self.num_skip -= self.num_processes
+                    continue
+
                 batch_element = {}
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[i], prefix='chosen'))
                 batch_element.update(self.tokenize_batch_element(example.prompt, example.generations[j], prefix='rejected'))

@@ -334,7 +334,7 @@ if __name__ == "__main__":
     
     # API-specific arguments
     parser.add_argument("--api_key", type=str, help="API key for the chosen API service")
-    parser.add_argument("--api_model", type=str, default="gpt-4o-mini", help="Model to use for API labeling")
+    parser.add_argument("--api_model", type=str, default="gpt-4.1-mini", help="Model to use for API labeling")
     parser.add_argument("--system_prompt", type=str, default="You are a helpful assistant that rates the quality of responses to given instructions.", help="System prompt for API labeling")
     parser.add_argument("--label_prompt", type=str, default="Provide only a RATING from 0 to 10 based on how well the RESPONSE satisfied the INSTRUCTION: ", help="Prompt template for API labeling")
     # Processing arguments

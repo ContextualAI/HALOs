@@ -630,6 +630,7 @@ class HumanlineSFTTrainer(BasicTrainer):
             normalized_loss = torch.where(humanline_mask, -policy_chosen_logps.detach(), -policy_chosen_logps) / token_mask.sum()
 
         # Gather losses and logps from all processes
+        metrics[f'unmasked/{mode}'] = ((1 - humanline_mask.float()) * token_mask).sum() / token_mask.sum()
         metrics[f'tokens/{mode}'] = self.accelerator.gather(token_mask.sum()).sum()
         metrics[f'logps/{mode}'] = self.accelerator.gather((policy_chosen_logps * token_mask).detach().sum() / token_mask.sum())
         metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())

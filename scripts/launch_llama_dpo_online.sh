@@ -1,9 +1,23 @@
 #!/bin/bash
+#SBATCH --job-name=test-job
+#SBATCH --nodes=1
+#SBATCH --mem=100G
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=8
+#SBATCH --time=23:55:00
+#SBATCH --partition=pli-c
+#SBATCH --output=%x.out
+#SBATCH --error=%x.err
 
 BETA=$1
 LR=$2
+N_EPOCHS=$3 # 3
+SPLIT=$4
+START_ROUND=${5:-1}  # Default to 1 if not provided
+
 TOTAL_PROMPTS=2048
-PROMPTS_PER_ROUND=512  # Train on fewer examples before sampling
+PROMPTS_PER_ROUND=64  # Train on fewer examples before sampling
 NUM_ROUNDS=$(($TOTAL_PROMPTS / $PROMPTS_PER_ROUND))  # Calculate this once at the start
 
 # Function to find an available port
@@ -40,49 +54,70 @@ export -f init_env
 # Run the training script using srun
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
-export MODEL_PATH=meta-llama/Meta-Llama-3-8B
-export SFT_CKPT=/scratch/gpfs/ke7953/models/llama3-8B-sft/FINAL
-export REWARD_CKPT=/scratch/gpfs/ke7953/models/llama3-8B-reward/FINAL
-export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-dpo-online
+export MODEL_PATH=allenai/tulu-2-13b
+export SFT_CKPT=allenai/tulu-2-13b
+# export REWARD_CKPT=/scratch/gpfs/sl2998/models/llama3-8B-reward/FINAL
+export REWARD_CKPT=openbmb/UltraRM-13b
+export CACHE_DIR=/scratch/gpfs/sl2998/models/test-tulu-2-13b-online-dpo-split-${SPLIT}-beta-${BETA}-lr-${LR}-eps-${N_EPOCHS}
+export HALO_DIR=/home/sl2998/workspace/HALOs
 
-mkdir \$CACHE_DIR
+mkdir -p \$CACHE_DIR
 
-# Start iterative training from SFT checkpoint
-CURRENT_CKPT=\$SFT_CKPT
-ROUND=1
-CUMULATIVE_PROMPTS=0
+# Start iterative training from SFT checkpoint or continue from a previous round
+if [ ${START_ROUND} -eq 1 ]; then
+    CURRENT_CKPT=\$SFT_CKPT
+    ROUND=1
+    CUMULATIVE_PROMPTS=0
+else
+    PREV_ROUND=$((${START_ROUND} - 1))
+    CURRENT_CKPT=\${CACHE_DIR}/test-tulu-2-13b-online-dpo-split-${SPLIT}-beta-${BETA}-lr-${LR}-eps-${N_EPOCHS}-R\${PREV_ROUND}/FINAL
+    ROUND=${START_ROUND}
+    CUMULATIVE_PROMPTS=$(((${START_ROUND} - 1) * ${PROMPTS_PER_ROUND}))
+    echo \"Continuing from round \${ROUND} with checkpoint \${CURRENT_CKPT}\"
+fi
 
 while [ \$ROUND -le ${NUM_ROUNDS} ]; do
     echo \"Starting round \$ROUND of ${NUM_ROUNDS} \"
     SAMPLES_FILE=\${CACHE_DIR}/R\${ROUND}_samples.json
+    DATA_FILE=\${CACHE_DIR}/R\${ROUND}_data.json
+    EXP_NAME=test-tulu-2-13b-online-dpo-split-${SPLIT}-beta-${BETA}-lr-${LR}-eps-${N_EPOCHS}-R\${ROUND}
 
-    # Sample from current model (first round uses SFT checkpoint)
-    python -m train.sample \$CURRENT_CKPT \
-        --output_file \$SAMPLES_FILE \
-        --gpu_count 4 \
-        --datasets alpacaeval \
-        --mode train \
-        --num_samples_per_prompt 4 \
-        --num_prompts ${PROMPTS_PER_ROUND} \
-        --num_skip \$CUMULATIVE_PROMPTS \
-        --batch_size ${PROMPTS_PER_ROUND}
+    # Check if samples file already exists
+    if [ ! -f \$SAMPLES_FILE ]; then
+        echo \"Sampling for round \$ROUND...\"
+        # Sample from current model (first round uses SFT checkpoint)
+        python -m train.sample \$CURRENT_CKPT \
+            --output_file \$SAMPLES_FILE \
+            --gpu_count 4 \
+            --datasets tulu_v25_arena23 \
+            --mode train \
+            --num_samples_per_prompt 4 \
+            --num_prompts ${PROMPTS_PER_ROUND} \
+            --num_skip \$CUMULATIVE_PROMPTS \
+            --batch_size ${PROMPTS_PER_ROUND}
+    else
+        echo \"Samples file \$SAMPLES_FILE already exists, skipping sampling step.\"
+    fi
 
     # if no more prompts left, end training early
     NUM_SAMPLES=\$(jq '. | length' \$SAMPLES_FILE)
 
     if [[ \$NUM_SAMPLES -gt 0 ]]; then
         CUMULATIVE_PROMPTS=\$((CUMULATIVE_PROMPTS + ${PROMPTS_PER_ROUND}))
-        DATA_FILE=\${CACHE_DIR}/R\${ROUND}_data.json
-        EXP_NAME=llama3-8B-sft-dpo-R\${ROUND}
-
-        # Label samples with reward model
-        accelerate launch \
-            --config_file accelerate_config/fsdp_4gpu.yaml \
-            --machine_rank \$SLURM_PROCID \
-            --main_process_ip \$MASTER_ADDR \
-            --main_process_port \$MASTER_PORT \
-            -m train.label \$SAMPLES_FILE \$DATA_FILE  \
-            --reward_model_path \$REWARD_CKPT --feedback_type pairwise --batch_size 16
+        
+        # Check if data file already exists
+        if [ ! -f \$DATA_FILE ]; then
+            echo \"Labeling samples for round \$ROUND...\"
+            # Label samples with API (must ssh into the login node for internet access)
+            ssh della-gpu \"source ~/.bashrc && \
+                conda activate halos && \
+                cd /home/sl2998/workspace/HALOs && \
+                accelerate launch -m train.label \$SAMPLES_FILE \$DATA_FILE \
+                --reward_model_path \$REWARD_CKPT \
+                --feedback_type binary --batch_size 16 \"
+        else
+            echo \"Data file \$DATA_FILE already exists, skipping labeling step.\"
+        fi
 
         # First round: load from SFT checkpoint
         # Subsequent rounds: policy resumes from previous checkpoint; reference model stays at SFT checkpoint
@@ -99,22 +134,25 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
             launch.py loss=dpo model=llama exp_name=\$EXP_NAME \
-            train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] \
+            train_datasets=[\$DATA_FILE] test_datasets=[ultrabin] \
             ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \
             ++lr=${LR} \
             ++loss.beta=${BETA} \
-            ++model.batch_size=16 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=16 ++online=true \
+            ++model.batch_size=8 \
+            ++model.gradient_accumulation_steps=4 \
+            ++model.eval_batch_size=32 \
+            ++online=true \
             \$MODEL_LOAD_ARG
 
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 
         # Clean up old checkpoint directory if it's not the SFT checkpoint
-        if [ \$CURRENT_CKPT != \$SFT_CKPT ] && [ \$SLURM_PROCID -eq 0 ]; then
-            OLD_EXP_DIR=\$(dirname \$CURRENT_CKPT)
-            echo \"Cleaning up \$OLD_EXP_DIR\"
-            rm -rf \$OLD_EXP_DIR
-        fi
+        # if [ \$CURRENT_CKPT != \$SFT_CKPT ] && [ \$SLURM_PROCID -eq 0 ]; then
+        #     OLD_EXP_DIR=\$(dirname \$CURRENT_CKPT)
+        #     echo \"Cleaning up \$OLD_EXP_DIR\"
+        #     rm -rf \$OLD_EXP_DIR
+        # fi
 
         CURRENT_CKPT=\$NEW_CKPT
         ROUND=\$((ROUND + 1))

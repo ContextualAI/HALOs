@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llama-dpo
+#SBATCH --job-name=llama-ppo
 #SBATCH --nodes=1
 #SBATCH --mem=100G
 #SBATCH --ntasks-per-node=1
@@ -7,13 +7,17 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --time=23:55:00
 #SBATCH --partition=pli-c
+#SBATCH --constraint="rh9"
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
-BETA=$1 # 0.01
-LR=$2 # 5e-7
-N_EPOCHS=$3 # 3
-SPLIT=$4
+# example usage: 
+# sbatch launch_llama_ppo.sh 0.05 1e-6 1 tulu_v25_arena23
+
+KL_COEF=$1 # 0.05, 0.0325
+LR=$2 # 1e-6
+N_EPOCHS=$3 # 1
+SPLIT=$4 # tulu_v25_arena23
 
 # Function to find an available port
 find_free_port() {
@@ -63,61 +67,55 @@ srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash
 init_env
 export MODEL_PATH=allenai/tulu-2-13b
 export HALO_DIR=/home/sl2998/workspace/HALOs
+export CKPT=/scratch/gpfs/sl2998/models/tulu-2-13b-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-${N_EPOCHS}
+export EXP_NAME=tulu-2-13b-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-${N_EPOCHS}
 
-export CKPT=/scratch/gpfs/sl2998/models/tulu-2-13b-dpo-split-${SPLIT}-beta-${BETA}-linear-lr-${LR}-eps-${N_EPOCHS}
-export EXP_NAME=tulu-2-13b-dpo-split-${SPLIT}-beta-${BETA}-linear-lr-${LR}-eps-${N_EPOCHS}
 
 if [ -n \"\$(ls -alt \$CKPT/ 2>/dev/null | grep step)\" ]; then
+    # Get the 2nd latest checkpoint (the latest checkpoint is often not fully written yet)
     export LATEST_CKPT=\$(ls -alt \$CKPT/ | grep step | head -n 2 | tail -n 1 | awk '{print \$NF}')
-    echo \"\$CKPT\"
-    echo \"Latest checkpoint: \$CKPT/\${LATEST_CKPT}\"
-
-    accelerate launch \
-        --config_file accelerate_config/fsdp_8gpu.yaml \
-        --machine_rank \$SLURM_PROCID \
-        --main_process_ip \$MASTER_ADDR \
-        --main_process_port \$MASTER_PORT \
-        launch.py loss=dpo model=llama train_datasets=[${SPLIT}] test_datasets=[ultrabin] exp_name=\${EXP_NAME} \
-        ++cache_dir=/scratch/gpfs/sl2998/models \
-        ++model.name_or_path=\$MODEL_PATH \
-        ++lr=${LR} \
-        ++intermediate_checkpoints=TRUE \
-        ++online=FALSE \
-        ++eval_every=1024 \
-        ++save_every=5120 \
-        ++loss.beta=${BETA} \
-        ++n_epochs=${N_EPOCHS} \
-        ++model.from_checkpoint=\$CKPT/\${LATEST_CKPT} \
-        ++model.batch_size=8 \
-        ++model.gradient_accumulation_steps=4 \
-        ++model.eval_batch_size=32 2>&1 | tee \${HALO_DIR}/logs/\${EXP_NAME}_from_\${LATEST_CKPT}.log
-
+    MODEL_LOAD_ARG=\"++model.from_checkpoint=\$CKPT/\${LATEST_CKPT}\"
+    echo \"Latest checkpoint: \$MODEL_LOAD_ARG\"
 else
+    MODEL_LOAD_ARG=\"++model.from_checkpoint=null\"
     echo \"No checkpoint found\"
-
-    accelerate launch \
-        --config_file accelerate_config/fsdp_8gpu.yaml \
-        --machine_rank \$SLURM_PROCID \
-        --main_process_ip \$MASTER_ADDR \
-        --main_process_port \$MASTER_PORT \
-        launch.py loss=dpo model=llama train_datasets=[${SPLIT}] test_datasets=[ultrabin] exp_name=\${EXP_NAME} \
-        ++cache_dir=/scratch/gpfs/sl2998/models \
-        ++model.name_or_path=\$MODEL_PATH \
-        ++lr=${LR} \
-        ++intermediate_checkpoints=TRUE \
-        ++online=FALSE \
-        ++eval_every=1024 \
-        ++save_every=5120 \
-        ++loss.beta=${BETA} \
-        ++n_epochs=${N_EPOCHS} \
-        ++model.batch_size=8 \
-        ++model.gradient_accumulation_steps=4 \
-        ++model.eval_batch_size=32 2>&1 | tee \${HALO_DIR}/logs/\${EXP_NAME}.log
 fi
 
-# Evaluate the final model
-# python -m train.sample \$CKPT --gpu_count 4 --output_file \${HALO_DIR}/evals/outputs/\$EXP_NAME.json
+accelerate launch \
+    --config_file accelerate_config/fsdp_8gpu.yaml \
+    --machine_rank \$SLURM_PROCID \
+    --main_process_ip \$MASTER_ADDR \
+    --main_process_port \$MASTER_PORT \
+    launch.py loss=ppo model=llama train_datasets=[${SPLIT}] test_datasets=[ultrafeedback_armorm] exp_name=\${EXP_NAME} \
+    ++cache_dir=/scratch/gpfs/sl2998/models \
+    ++model.name_or_path=\$MODEL_PATH \
+    ++lr=${LR} \
+    ++intermediate_checkpoints=true \
+    ++online=false \
+    ++eval_every=256 \
+    ++save_every=5120 \
+    ++weight_decay=0.0 \
+    ++beta1=0.9 \
+    ++beta2=0.95 \
+    ++eps=1e-5 \
+    ++warmup=0.10 \
+    ++loss.ppo_epochs=1 \
+    ++loss.cliprange=0.2 \
+    ++loss.lam=0.95 \
+    ++loss.gamma=1.0 \
+    ++loss.critic_coef=0.1 \
+    ++loss.KL_coef=${KL_COEF} \
+    ++n_epochs=${N_EPOCHS} \
+    ++model.from_checkpoint=\$CKPT/\${LATEST_CKPT} \
+    ++model.batch_size=8 \
+    ++model.max_grad_norm=1 \
+    ++model.max_length=4096 \
+    ++model.max_prompt_length=2048 \
+    ++model.gradient_accumulation_steps=8 \
+    ++model.eval_batch_size=32 \
+    \$MODEL_LOAD_ARG 2>&1 | tee \${HALO_DIR}/logs/\${EXP_NAME}.log
 
+# Evaluate the final model
 ssh della-pli \"source ~/.bashrc && \
             conda activate halos && \
             cd \$HALO_DIR/evals && \
@@ -127,10 +125,9 @@ ssh della-pli \"source ~/.bashrc && \
 # For GPQA, this dataset is gated, so you will have to accept the terms of use at https://huggingface.co/datasets/Idavidrein/gpqa and login via huggingface-cli login using your HF Hub token before running this task.
 
 lm_eval --model hf \
-    --model_args pretrained=\$CURRENT_CKPT,tokenizer=\$CURRENT_CKPT,parallelize=True \
+    --model_args pretrained=\$CKPT/FINAL,tokenizer=\$CKPT/FINAL,parallelize=True \
     --tasks mmlu,gsm8k_cot,bbh_cot_fewshot,humaneval_plus,mbpp_plus,truthfulqa_mc1,toxigen,ifeval,arc_easy,arc_challenge,winogrande \
     --confirm_run_unsafe_code \
     --batch_size 32 2>&1 | tee \$HALO_DIR/evals/outputs/\${EXP_NAME}_lm_eval.log
 
-python -m evals.scripts.summarize_metrics evals/outputs -o evals/metrics_summary
 "

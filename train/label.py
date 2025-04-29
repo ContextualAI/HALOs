@@ -108,7 +108,13 @@ async def process_samples_with_api(
     
     for sample, score in zip(samples, scores):
         try:
-            score = float(re.search(r'\d+', score).group())
+            # Try to extract 'Final Score: X' from the response
+            match = re.search(r"Final Score:\s*([0-9]+(?:\.[0-9]+)?)", str(score), re.IGNORECASE)
+            if match:
+                score = float(match.group(1))
+            else:
+                # Fallback: extract first number
+                score = float(re.search(r'\d+(?:\.\d+)?', str(score)).group())
         except Exception:
             print(f"Warning: Could not parse API response {score} as float. skipping prompt {sample['prompt_id']}")
             continue
@@ -116,7 +122,7 @@ async def process_samples_with_api(
         processed_sample = sample.copy()
         processed_sample['reward'] = score
         # since a dataloader isn't used, the output has to be explicitly formatted
-        processed_sample['output'] = [{ "role" : "assistant", "content" : processed_sample['output']}]
+        processed_sample['output'] = [{ "role" : "assistant", "content" : processed_sample['output'] }]
         processed_samples.append(processed_sample)
             
     return processed_samples
@@ -220,7 +226,7 @@ async def main(args):
             client = openai.AsyncOpenAI(api_key=args.api_key)
         else:
             raise ValueError(f"Unsupported API type: {args.api_type}")
-            
+        
         processed_samples = await process_samples_with_api(
             samples, client, args.system_prompt, args.label_prompt,
             args.api_model, args.batch_size
@@ -336,7 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("--api_key", type=str, help="API key for the chosen API service")
     parser.add_argument("--api_model", type=str, default="gpt-4.1-mini", help="Model to use for API labeling")
     parser.add_argument("--system_prompt", type=str, default="You are a helpful assistant that rates the quality of responses to given instructions.", help="System prompt for API labeling")
-    parser.add_argument("--label_prompt", type=str, default="Provide only a RATING from 0 to 10 based on how well the RESPONSE satisfied the INSTRUCTION: ", help="Prompt template for API labeling")
+    parser.add_argument("--label_prompt", type=str, default="""# Instructions for Rating the Response\n\nYou are an expert evaluator. Please rate the quality of the RESPONSE to the INSTRUCTION according to the following rules:\n\n- Consider how well the RESPONSE satisfies the INSTRUCTION.\n- Evaluate correctness, completeness, clarity, and helpfulness.\n- Penalize hallucinations, factual errors, or irrelevant content.\n- If the RESPONSE is harmful, unsafe, or violates guidelines, assign a low score.\n\n# Workflow\n\n1. Briefly explain your reasoning for the score (1-2 sentences).\n2. At the end, provide your final rating as a single number from 0 (worst) to 10 (best) on a new line, in the format: Final Score: X\n\n# Example\n\nReasoning: The response is accurate, clear, and directly addresses the instruction.\n\nFinal Score: 9\n\n---\n\n""", help="Prompt template for API labeling")
     # Processing arguments
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing")
     parser.add_argument("--max_length", type=int, default=2048, help="Maximum sequence length for input")

@@ -260,9 +260,15 @@ def main(config: DictConfig):
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")
     optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr, weight_decay=config.weight_decay, betas=(config.beta1, config.beta2))
+    
+    # For DPOTrainer, prepare policy and optimizer across all GPUs to avoid OOM on master node
+    if config.loss.trainer == "DPOTrainer":
+        # Distribute model, optimizer, and scheduler across GPUs
+        accelerator.print("Preparing DPOTrainer components across GPUs")
+        policy, optimizer = accelerator.prepare(policy, optimizer)
 
     warmup_steps = train_iterator.num_training_steps * config.warmup
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
+    warmup_scheduler = LinearLR(optimizer, start_factor=config.warmup, end_factor=1.0, total_iters=warmup_steps)
 
     if config.loss.dataloader == "SFTDataLoader":
         main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - warmup_steps, eta_min=0)

@@ -47,7 +47,10 @@ def process_batch_with_reward_model(
             input_ids=batch['target_combined_input_ids'],
             attention_mask=batch['target_combined_attention_mask']
         )
-        reward_scores = outputs.logits[:, 1]
+        if args.reward_model_path == "RLHFlow/ArmoRM-Llama3-8B-v0.1":
+            reward_scores = outputs.score.cpu().float()
+        else:
+            reward_scores = outputs.logits[:, 1]
     
     processed_samples = []
     for i in range(len(batch['prompt'])):
@@ -59,13 +62,13 @@ def process_batch_with_reward_model(
             'prompt_id': batch['prompt_id'][i],
         }
         processed_samples.append(sample)
-
-    # Gather samples from all processes
+    
     gathered_samples = [None] * accelerator.num_processes
-    dist.all_gather_object(gathered_samples, processed_samples)
         
     # Return gathered samples from all processes, not just main process
     # This ensures samples from all processes are included
+    dist.all_gather_object(gathered_samples, processed_samples)
+    
     if accelerator.is_main_process:
         return [item for sublist in gathered_samples for item in sublist]
     
@@ -93,7 +96,7 @@ async def process_samples_with_api(
         tasks = []
 
         for sample in batch:
-            prompt = f"INSTRUCTION: {sample['prompt'][0]['content']}\n\nRESPONSE: {sample['output']}\n\n{label_prompt}: "
+            prompt = f"INSTRUCTION: {sample['prompt'][0]['content']}\n\nRESPONSE: {sample['output']}\n\n{label_prompt}"
             tasks.append(get_api_completion(client, system_prompt, prompt, model))
 
         batch_scores = await asyncio.gather(*tasks)
@@ -154,7 +157,7 @@ def convert_to_binary_feedback(samples: List[Dict], threshold=0) -> List[Dict]:
     return feedback
 
 
-def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: float=0, mode: str='train') -> List[Dict]:
+def convert_to_pairwise_feedback(samples: List[Dict], seed: int) -> List[Dict]:
     """Convert samples to pairwise feedback format."""
     random.seed(seed)
     
@@ -164,20 +167,15 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold: floa
     
     feedback = []
     for prompt_id, group in grouped.items():
-        if len(group) < 2 and mode == "train":
+        if len(group) < 2:
             continue
         
         group.sort(key=lambda x: x['reward'], reverse=True)
         
         for i in range(len(group) - 1):
             higher_reward, lower_reward = group[i], group[i + 1]
-            
-            if mode == "train":
-                if higher_reward['reward'] == lower_reward['reward']:
-                    continue
-
-                if threshold and abs(higher_reward['reward'] - lower_reward['reward']) < threshold:
-                    continue
+            if higher_reward['reward'] == lower_reward['reward']:
+                continue
             
             if random.random() < 0.5:
                 sample_A, sample_B = higher_reward, lower_reward
@@ -207,14 +205,6 @@ async def main(args):
     # Load samples
     with open(args.samples_path, 'r') as f:
         samples = json.load(f)
-
-    # If second samples file provided, merge them for pairwise comparison
-    if args.second_samples_path:
-        with open(args.second_samples_path, 'r') as f:
-            second_samples = json.load(f)
-        for sample in second_samples:
-            sample['sample_id'] += 1
-        samples.extend(second_samples)
     
     if args.api_type:
         # API-based labeling path
@@ -247,15 +237,11 @@ async def main(args):
             local_files_only=True,
             trust_remote_code=True
         )
-        
+        reward_model = accelerator.prepare(reward_model)
+
         # Initialize the dataloader for reward model processing
-        if args.second_samples_path:
-            names = [args.samples_path, args.second_samples_path]
-        else:
-            names = [args.samples_path]
-        
         dataloader = SFTDataLoader(
-            dataset_names=names,
+            dataset_names=[args.samples_path],
             tokenizer=tokenizer,
             process_index=accelerator.process_index,
             num_processes=accelerator.num_processes,
@@ -264,7 +250,7 @@ async def main(args):
             max_length=args.max_length,
             max_prompt_length=args.max_prompt_length,
             n_epochs=1,
-            seed=args.seed,
+            seed=args.seed
         )
         dataloader, reward_model = accelerator.prepare(dataloader, reward_model)
         
@@ -277,9 +263,7 @@ async def main(args):
         
         processed_samples = []
         for batch in tqdm(dataloader, disable=not accelerator.is_main_process):
-            batch = {k: v.to(accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
             batch_samples = process_batch_with_reward_model(batch, reward_model, accelerator)
-            
             if accelerator.is_main_process:
                 processed_samples.extend(batch_samples)
         
@@ -297,12 +281,8 @@ async def main(args):
             # Process and write feedback
             if args.feedback_type == 'binary':
                 feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
-            elif args.feedback_type == 'pairwise' and args.second_samples_path is None:
-                # Prompts are sampled from the same model
-                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
-            elif args.feedback_type == 'pairwise' and args.second_samples_path:
-                # Prompts are sampled from two different models, mode='eval' is required
-                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold, mode='eval')
+            elif args.feedback_type == 'pairwise':
+                feedback = convert_to_pairwise_feedback(processed_samples, args.seed)
             else:
                 feedback = processed_samples
                 for x in feedback:
@@ -321,8 +301,8 @@ async def main(args):
     
     # Clean up distributed training resources if using reward model
     accelerator.end_training()
-    if dist.is_initialized():
-        dist.destroy_process_group()
+    if torch.distributed.is_initialized():
+        torch.distributed.destroy_process_group()
 
 
 if __name__ == "__main__":
@@ -331,7 +311,6 @@ if __name__ == "__main__":
     # Input/output arguments
     parser.add_argument("samples_path", type=str, help="Path to the JSON file containing samples")
     parser.add_argument("output_path", type=str, help="Path to save the feedback file")
-    parser.add_argument("--second_samples_path", type=str, default=None, help="Optional second samples file for pairwise comparison")
     
     # Labeling method arguments
     labeling_group = parser.add_mutually_exclusive_group(required=True)
@@ -342,7 +321,7 @@ if __name__ == "__main__":
     parser.add_argument("--api_key", type=str, help="API key for the chosen API service")
     parser.add_argument("--api_model", type=str, default="gpt-4.1-mini", help="Model to use for API labeling")
     parser.add_argument("--system_prompt", type=str, default="You are a helpful assistant that rates the quality of responses to given instructions.", help="System prompt for API labeling")
-    parser.add_argument("--label_prompt", type=str, default="""# Instructions for Rating the Response\n\nYou are an expert evaluator. Please rate the quality of the RESPONSE to the INSTRUCTION according to the following rules:\n\n- Consider how well the RESPONSE satisfies the INSTRUCTION.\n- Evaluate correctness, completeness, clarity, and helpfulness.\n- Penalize hallucinations, factual errors, or irrelevant content.\n- If the RESPONSE is harmful, unsafe, or violates guidelines, assign a low score.\n\n# Workflow\n\n1. Briefly explain your reasoning for the score (1-2 sentences).\n2. At the end, provide your final rating as a single number from 0 (worst) to 10 (best) on a new line, in the format: Final Score: X\n\n# Example\n\nReasoning: The response is accurate, clear, and directly addresses the instruction.\n\nFinal Score: 9\n\n---\n\n""", help="Prompt template for API labeling")
+    parser.add_argument("--label_prompt", type=str, default="Provide only a RATING from 0 to 10 based on how well the RESPONSE satisfied the INSTRUCTION: ", help="Prompt template for API labeling")
     # Processing arguments
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing")
     parser.add_argument("--max_length", type=int, default=2048, help="Maximum sequence length for input")

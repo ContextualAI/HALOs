@@ -12,14 +12,13 @@
 #SBATCH --error=logs/%x_%j.err
 
 # example usage: 
-# sbatch launch_llama_ppo_online_binary.sh 0.05 1e-6 1 tulu_v25_arena23
+# sbatch launch_llama_ppo_online_binary.sh 0.05 1e-6 0.2
 
 KL_COEF=$1 # 0.05
 LR=$2 # 1e-6
-N_EPOCHS=$3 # 1
-SPLIT=$4 # tulu_v25_arena23
+CLIP_RANGE=$3 # 0.2
 
-TOTAL_PROMPTS=2048
+TOTAL_PROMPTS=1024
 PROMPTS_PER_ROUND=512  # Train on fewer examples before sampling
 NUM_ROUNDS=$(($TOTAL_PROMPTS / $PROMPTS_PER_ROUND))  # Calculate this once at the start
 
@@ -57,24 +56,23 @@ export -f init_env
 # Run the training script using srun
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
-export MODEL_PATH=allenai/tulu-2-13b
-export SFT_CKPT=allenai/tulu-2-13b
+export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
 export HALO_DIR=/scratch/gpfs/sl2998/workspace/HALOs
-export REWARD_CKPT=RLHFlow/ArmoRM-Llama3-8B-v0.1  # running on 8 GPUs
-export CACHE_DIR=/scratch/gpfs/sl2998/models/tulu-2-13b-online-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-1-armorm-binary
+export REWARD_CKPT=RLHFlow/ArmoRM-Llama3-8B-v0.1
+export CACHE_DIR=/scratch/gpfs/sl2998/models/llama-3-8b-instruct-online-ppo-kl-${KL_COEF}-lr-${LR}-clip-${CLIP_RANGE}-armorm-binary
 
 if [ ! -d \"\$CACHE_DIR\" ]; then
     mkdir -p \$CACHE_DIR
 fi
 
 # Start iterative training from SFT checkpoint or last saved checkpoint
-CURRENT_CKPT=\$SFT_CKPT
+CURRENT_CKPT=\$MODEL_PATH
 ROUND=1
 CUMULATIVE_PROMPTS=0
 
 # Check if there are previous checkpoints to resume from
 for r in \$(seq ${NUM_ROUNDS} -1 1); do
-    LAST_EXP_NAME=tulu-2-13b-online-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-1-armorm-binary-R\${r}
+    LAST_EXP_NAME=llama-3-8b-instruct-online-ppo-kl-${KL_COEF}-lr-${LR}-clip-${CLIP_RANGE}-armorm-binary-R\${r}
     LAST_CKPT=\${CACHE_DIR}/\${LAST_EXP_NAME}/FINAL
     if [ -d \"\$LAST_CKPT\" ]; then
         CURRENT_CKPT=\$LAST_CKPT
@@ -90,85 +88,74 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
     echo \"Starting round \$ROUND of ${NUM_ROUNDS} \"
     SAMPLES_FILE=\${CACHE_DIR}/R\${ROUND}_samples.json
 
+    echo "Sampling from current model..."
     # Sample from current model (first round uses SFT checkpoint)
     python -m train.sample \$CURRENT_CKPT \
         --output_file \$SAMPLES_FILE \
-        --gpu_count 8 \
-        --datasets ${SPLIT} \
+        --gpu_count 4 \
+        --datasets ultrafeedback_armorm \
         --split train \
         --mode train \
         --num_samples_per_prompt 4 \
         --num_prompts ${PROMPTS_PER_ROUND} \
         --num_skip \$CUMULATIVE_PROMPTS \
         --batch_size ${PROMPTS_PER_ROUND}
+    echo "Sampling complete. Labeling samples..."
 
     # if no more prompts left, end training early
     NUM_SAMPLES=\$(jq '. | length' \$SAMPLES_FILE)
-    
-    echo \$NUM_SAMPLES
-    echo \$PROMPTS_PER_ROUND
-    echo \$CUMULATIVE_PROMPTS
 
     if [[ \$NUM_SAMPLES -gt 0 ]]; then
-        EXP_NAME=tulu-2-13b-online-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-1-armorm-binary-R\${ROUND}
+        EXP_NAME=llama-3-8b-instruct-online-ppo-kl-${KL_COEF}-lr-${LR}-clip-${CLIP_RANGE}-armorm-binary-R\${ROUND}
         CUMULATIVE_PROMPTS=\$((CUMULATIVE_PROMPTS + ${PROMPTS_PER_ROUND}))
         DATA_FILE=\${CACHE_DIR}/R\${ROUND}_data.json
 
         # Label samples with API (must ssh into the login node for internet access)
-        # if [ -f \"\$DATA_FILE\" ]; then
-            # echo \"Data file \$DATA_FILE already exists. Skipping labeling step.\"
-        # else
-        accelerate launch --config_file accelerate_config/fsdp_8gpu.yaml \
+        accelerate launch --config_file accelerate_config/fsdp_4gpu.yaml \
             -m train.label \$SAMPLES_FILE \$DATA_FILE \
             --reward_model_path \$REWARD_CKPT \
             --feedback_type binary --batch_size 16
-        # fi
 
-        # First round: load from SFT checkpoint
+        # First round: load from checkpoint
         # Subsequent rounds: policy resumes from previous checkpoint; reference model stays at SFT checkpoint
         if [ \$ROUND -eq 1 ]; then
             MODEL_LOAD_ARG=\"++model.load_from=\$CURRENT_CKPT\"
         else
             echo \"Loading from checkpoint: \$CURRENT_CKPT\"
-            MODEL_LOAD_ARG=\"++model.from_checkpoint=\$CURRENT_CKPT ++model.load_from=\$SFT_CKPT\"
+            MODEL_LOAD_ARG=\"++model.from_checkpoint=\$CURRENT_CKPT ++model.load_from=\$MODEL_PATH\"
         fi
-        echo \$MODEL_LOAD_ARG
         
         # Train PPO model on the newly sampled and labeled data
-        
-        # total batch size is 8 * 8 = 64
-        # add this line if a reward model is used during training
-        # ++model.reward_model_path=\$REWARD_CKPT \
-        # ++model.enforce_binary=true \
-
         accelerate launch \
-            --config_file accelerate_config/fsdp_8gpu.yaml \
+            --config_file accelerate_config/fsdp_4gpu.yaml \
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            launch.py loss=ppo model=llama train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] exp_name=\$EXP_NAME \
+            launch.py loss=ppo model=llama train_datasets=[\$DATA_FILE] test_datasets=[ultrabin] exp_name=\$EXP_NAME \
             ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \
+            ++model.reward_model_path=\$REWARD_CKPT \
             ++lr=${LR} \
             ++intermediate_checkpoints=true \
             ++online=true \
             ++eval_every=256 \
+            ++save_every=5120 \
             ++weight_decay=0.0 \
             ++beta1=0.9 \
             ++beta2=0.95 \
             ++eps=1e-5 \
             ++warmup=0.10 \
             ++loss.ppo_epochs=1 \
-            ++loss.cliprange=0.2 \
+            ++loss.cliprange=${CLIP_RANGE} \
             ++loss.lam=0.95 \
             ++loss.gamma=1.0 \
             ++loss.critic_coef=0.1 \
             ++loss.KL_coef=${KL_COEF} \
-            ++n_epochs=${N_EPOCHS} \
+            ++n_epochs=1 \
             ++model.batch_size=8 \
             ++model.max_grad_norm=1 \
-            ++model.max_length=4096 \
-            ++model.max_prompt_length=2048 \
+            ++model.max_length=2048 \
+            ++model.max_prompt_length=1024 \
             ++model.gradient_accumulation_steps=8 \
             ++model.eval_batch_size=32 \
             \$MODEL_LOAD_ARG 2>&1 | tee \$HALO_DIR/logs/\${EXP_NAME}.log
@@ -176,7 +163,7 @@ while [ \$ROUND -le ${NUM_ROUNDS} ]; do
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 
         # Clean up old checkpoint directory if it's not the SFT checkpoint
-        if [ \$CURRENT_CKPT != \$SFT_CKPT ] && [ \$SLURM_PROCID -eq 0 ]; then
+        if [ \$CURRENT_CKPT != \$MODEL_PATH ] && [ \$SLURM_PROCID -eq 0 ]; then
             OLD_EXP_DIR=\$(dirname \$CURRENT_CKPT)
             echo \"Cleaning up \$OLD_EXP_DIR\"
             rm -rf \$OLD_EXP_DIR

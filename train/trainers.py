@@ -252,7 +252,10 @@ class BasicTrainer(object):
         Returns:
             torch.FloatTensor of shape (microbatch_size,) containing reward scores
         """
-        if self.reward_model is not None:
+        if 'score' in batch:
+            print(f"Using score from batch: {batch['score']}")
+            reward_scores = batch['score']
+        elif self.reward_model is not None:
             # Decode the sequences using policy tokenizer
             sequences = self.tokenizer.batch_decode(batch['target_combined_input_ids'], skip_special_tokens=True)
             # Encode with reward model tokenizer
@@ -268,7 +271,10 @@ class BasicTrainer(object):
                 # Get reward model scores
                 outputs = self.reward_model(reward_inputs['input_ids'], attention_mask=reward_inputs['attention_mask'])
                 # Use the positive class logit as the reward score
-                reward_scores = outputs.logits[:, 1]
+                if self.config.model.reward_model_path == "RLHFlow/ArmoRM-Llama3-8B-v0.1":
+                    reward_scores = outputs.score.cpu().float()
+                else:
+                    reward_scores = outputs.logits[:, 1]
         else:
             # Use binary labels (1 for chosen, -1 for rejected)
             reward_scores = torch.tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(len(batch['status']))])
@@ -630,6 +636,7 @@ class HumanlineSFTTrainer(BasicTrainer):
             normalized_loss = torch.where(humanline_mask, -policy_chosen_logps.detach(), -policy_chosen_logps) / token_mask.sum()
 
         # Gather losses and logps from all processes
+        metrics[f'unmasked/{mode}'] = ((1 - humanline_mask.float()) * token_mask).sum() / token_mask.sum()
         metrics[f'tokens/{mode}'] = self.accelerator.gather(token_mask.sum()).sum()
         metrics[f'logps/{mode}'] = self.accelerator.gather((policy_chosen_logps * token_mask).detach().sum() / token_mask.sum())
         metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
@@ -1412,7 +1419,7 @@ class PPOTrainer(BasicTrainer):
 
                 if self.example_counter > 0:
                     if self.config.debug:
-                        self.accelerator.print('skipping save in debug mode')
+                        self.accelerator.print('skipping save in debug mode.')
                     elif self.config.intermediate_checkpoints:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
                         self.accelerator.print(f'creating checkpoint to write to {output_dir}...')
@@ -1558,8 +1565,7 @@ class PPOTrainer(BasicTrainer):
             
         self.accelerator.wait_for_everyone()
 
-        unwrapped_v_head = self.accelerator.unwrap_model(self.policy.v_head)
-        torch.save(unwrapped_v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))
+        self.accelerator.save(self.policy.v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))
         self.accelerator.wait_for_everyone()
 
 

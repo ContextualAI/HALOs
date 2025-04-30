@@ -1,9 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=llama-ppo
+#SBATCH --job-name=llama-offline-ppo
 #SBATCH --nodes=1
 #SBATCH --mem=100G
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:8
+#SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
 #SBATCH --time=23:55:00
 #SBATCH --partition=pli-c
@@ -12,12 +12,11 @@
 #SBATCH --error=logs/%x_%j.err
 
 # example usage: 
-# sbatch launch_llama_ppo.sh 0.05 1e-6 1 tulu_v25_arena23
+# sbatch launch_llama_ppo.sh 0.05 1e-6 0.2
 
-KL_COEF=$1 # 0.05, 0.0325
-LR=$2 # 1e-6
-N_EPOCHS=$3 # 1
-SPLIT=$4 # tulu_v25_arena23
+KL_COEF=$1
+LR=$2
+CLIP_RANGE=$3
 
 # Function to find an available port
 find_free_port() {
@@ -65,11 +64,10 @@ export -f init_env
 # Run the training script using srun
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
-export MODEL_PATH=allenai/tulu-2-13b
+export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
 export HALO_DIR=/home/sl2998/workspace/HALOs
-export CKPT=/scratch/gpfs/sl2998/models/tulu-2-13b-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-${N_EPOCHS}
-export EXP_NAME=tulu-2-13b-ppo-split-${SPLIT}-kl-${KL_COEF}-linear-lr-${LR}-eps-${N_EPOCHS}
-
+export CKPT=/scratch/gpfs/sl2998/models/llama3-8b-instruct-ppo-kl-${KL_COEF}-lr-${LR}-clip-${CLIP_RANGE}
+export EXP_NAME=llama3-8b-instruct-ppo-kl-${KL_COEF}-lr-${LR}-clip-${CLIP_RANGE}
 
 if [ -n \"\$(ls -alt \$CKPT/ 2>/dev/null | grep step)\" ]; then
     # Get the 2nd latest checkpoint (the latest checkpoint is often not fully written yet)
@@ -82,11 +80,11 @@ else
 fi
 
 accelerate launch \
-    --config_file accelerate_config/fsdp_8gpu.yaml \
+    --config_file accelerate_config/fsdp_4gpu.yaml \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    launch.py loss=ppo model=llama train_datasets=[${SPLIT}] test_datasets=[ultrafeedback_armorm] exp_name=\${EXP_NAME} \
+    launch.py loss=ppo model=llama train_datasets=[ultrafeedback_armorm] test_datasets=[ultrabin] exp_name=\${EXP_NAME} \
     ++cache_dir=/scratch/gpfs/sl2998/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
@@ -100,17 +98,17 @@ accelerate launch \
     ++eps=1e-5 \
     ++warmup=0.10 \
     ++loss.ppo_epochs=1 \
-    ++loss.cliprange=0.2 \
+    ++loss.cliprange=${CLIP_RANGE} \
     ++loss.lam=0.95 \
     ++loss.gamma=1.0 \
     ++loss.critic_coef=0.1 \
     ++loss.KL_coef=${KL_COEF} \
-    ++n_epochs=${N_EPOCHS} \
+    ++n_epochs=1 \
     ++model.from_checkpoint=\$CKPT/\${LATEST_CKPT} \
     ++model.batch_size=8 \
     ++model.max_grad_norm=1 \
-    ++model.max_length=4096 \
-    ++model.max_prompt_length=2048 \
+    ++model.max_length=2048 \
+    ++model.max_prompt_length=1024 \
     ++model.gradient_accumulation_steps=8 \
     ++model.eval_batch_size=32 \
     \$MODEL_LOAD_ARG 2>&1 | tee \${HALO_DIR}/logs/\${EXP_NAME}.log

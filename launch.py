@@ -261,18 +261,24 @@ def main(config: DictConfig):
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")
     optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr, weight_decay=config.weight_decay, betas=(config.beta1, config.beta2))
+    
+    # For DPOTrainer, prepare policy and optimizer across all GPUs to avoid OOM on master node
+    if config.loss.trainer == "DPOTrainer":
+        # Distribute model, optimizer, and scheduler across GPUs
+        accelerator.print("Preparing DPOTrainer components across GPUs")
+        policy, optimizer = accelerator.prepare(policy, optimizer)
 
     warmup_steps = train_iterator.num_training_steps * config.warmup
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
+    warmup_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=warmup_steps)
 
     if config.loss.dataloader == "SFTDataLoader":
         main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - warmup_steps, eta_min=0)
     else:
         main_scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
     
-    print(f"Total training steps: {train_iterator.num_training_steps}")
+    accelerator.print(f"Total training steps: {train_iterator.num_training_steps}")
     scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_steps])
-
+    
     if config.model.from_checkpoint:
         optimizer_state = optimizer.state_dict()
         optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt")))
@@ -280,6 +286,7 @@ def main(config: DictConfig):
 
         scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
         scheduler.load_state_dict(scheduler_state)
+        del optimizer_state, scheduler_state
 
     # Load explicit reward model if necessary (e.g., for PPO)
     if config.model.reward_model.path:

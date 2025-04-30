@@ -7,9 +7,13 @@ accelerate launch --config_file accelerate_config/fsdp_4gpu.yaml --main_process_
     -m train.label --reward_model_path models/llama3-8B-bt/FINAL outputs.json reward_data.json --feedback_type pairwise
 
 Sample usage for API labeling (accelerate not needed):
-accelerate launch -m train.label --api_type openai --api_key YOUR_KEY --api_model gpt-4 \
+python -m train.label --api_type openai --api_key YOUR_KEY --api_model gpt-4 \
     --label_prompt "Rate this response's quality from 0 to 1:" \
     outputs.json reward_data.json --feedback_type binary
+
+Sample usage for pairwise labeling of two sample files:
+python -m train.label --second_samples_path baseline_samples.json --api_type openai --api_key YOUR_KEY \
+    outputs.json reward_data.json --feedback_type pairwise
 """
 
 import argparse
@@ -27,6 +31,7 @@ from .dataloader import SFTDataLoader
 from collections import defaultdict
 import openai
 import asyncio
+import torch.distributed as dist
 
 
 def process_batch_with_reward_model(
@@ -35,13 +40,17 @@ def process_batch_with_reward_model(
     accelerator: Accelerator
 ) -> List[Dict]:
     """Process a batch through the reward model using the already tokenized sequences."""
+    
     reward_model.eval()
     with torch.no_grad():
         outputs = reward_model(
             input_ids=batch['target_combined_input_ids'],
             attention_mask=batch['target_combined_attention_mask']
         )
-        reward_scores = outputs.logits[:, 1]
+        if args.reward_model_path == "RLHFlow/ArmoRM-Llama3-8B-v0.1":
+            reward_scores = outputs.score.cpu().float()
+        else:
+            reward_scores = outputs.logits[:, 1]
     
     processed_samples = []
     for i in range(len(batch['prompt'])):
@@ -55,7 +64,10 @@ def process_batch_with_reward_model(
         processed_samples.append(sample)
     
     gathered_samples = [None] * accelerator.num_processes
-    torch.distributed.all_gather_object(gathered_samples, processed_samples)
+        
+    # Return gathered samples from all processes, not just main process
+    # This ensures samples from all processes are included
+    dist.all_gather_object(gathered_samples, processed_samples)
     
     if accelerator.is_main_process:
         return [item for sublist in gathered_samples for item in sublist]
@@ -84,7 +96,7 @@ async def process_samples_with_api(
         tasks = []
 
         for sample in batch:
-            prompt = f"INSTRUCTION: {sample['prompt'][0]['content']}\n\nRESPONSE: {sample['output']}\n\n{label_prompt}: "
+            prompt = f"INSTRUCTION: {sample['prompt'][0]['content']}\n\nRESPONSE: {sample['output']}\n\n{label_prompt}"
             tasks.append(get_api_completion(client, system_prompt, prompt, model))
 
         batch_scores = await asyncio.gather(*tasks)
@@ -99,7 +111,13 @@ async def process_samples_with_api(
     
     for sample, score in zip(samples, scores):
         try:
-            score = float(re.search(r'\d+', score).group())
+            # Try to extract 'Final Score: X' from the response
+            match = re.search(r"Final Score:\s*([0-9]+(?:\.[0-9]+)?)", str(score), re.IGNORECASE)
+            if match:
+                score = float(match.group(1))
+            else:
+                # Fallback: extract first number
+                score = float(re.search(r'\d+(?:\.\d+)?', str(score)).group())
         except Exception:
             print(f"Warning: Could not parse API response {score} as float. skipping prompt {sample['prompt_id']}")
             continue
@@ -107,7 +125,7 @@ async def process_samples_with_api(
         processed_sample = sample.copy()
         processed_sample['reward'] = score
         # since a dataloader isn't used, the output has to be explicitly formatted
-        processed_sample['output'] = [{ "role" : "assistant", "content" : processed_sample['output']}]
+        processed_sample['output'] = [{ "role" : "assistant", "content" : processed_sample['output'] }]
         processed_samples.append(processed_sample)
             
     return processed_samples
@@ -199,7 +217,7 @@ async def main(args):
             client = openai.AsyncOpenAI(api_key=args.api_key)
         else:
             raise ValueError(f"Unsupported API type: {args.api_type}")
-            
+        
         processed_samples = await process_samples_with_api(
             samples, client, args.system_prompt, args.label_prompt,
             args.api_model, args.batch_size
@@ -235,12 +253,23 @@ async def main(args):
             n_epochs=1,
             seed=args.seed
         )
+        dataloader, reward_model = accelerator.prepare(dataloader, reward_model)
+        
+        # Initialize distributed setup if not already done
+        if accelerator.num_processes > 1 and not dist.is_initialized():
+            accelerator.wait_for_everyone()
+            
+            if accelerator.is_main_process:
+                dist.init_process_group(backend='nccl')
         
         processed_samples = []
         for batch in tqdm(dataloader, disable=not accelerator.is_main_process):
             batch_samples = process_batch_with_reward_model(batch, reward_model, accelerator)
             if accelerator.is_main_process:
                 processed_samples.extend(batch_samples)
+        
+        # Wait for all processes to complete
+        accelerator.wait_for_everyone()
 
         print(f"Labelled {len(processed_samples)} samples using {args.reward_model_path}")
 

@@ -62,12 +62,12 @@ def main(config: DictConfig):
         accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
     # Calculate microbatch sizes
-    if config.model.batch_size % accelerator.num_processes == 0:
+    if config.model.batch_size % (accelerator.num_processes * config.model.gradient_accumulation_steps) == 0:
         config.model.microbatch_size = config.model.batch_size / (accelerator.num_processes * config.model.gradient_accumulation_steps)
     else:
         raise ValueError(f"{config.model.batch_size} needs to be divisible by the number of processes * gradient_accumulation_steps")
 
-    if config.model.eval_batch_size % accelerator.num_processes == 0:
+    if config.model.eval_batch_size % (accelerator.num_processes * config.model.gradient_accumulation_steps) == 0:
         config.model.eval_microbatch_size = config.model.eval_batch_size / (accelerator.num_processes * config.model.gradient_accumulation_steps)
     else:
         raise ValueError(f"{config.model.eval_batch_size} needs to be divisible by the number of processes * gradient_accumulation_steps")

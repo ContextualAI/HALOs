@@ -36,7 +36,7 @@ max_prompt_length: 1024
 # activation checkpointing (not supported for all models; may need to be overwritten)
 activation_checkpointing: true
 
-# the per-step batch size (across all machines); divide by number of devices to get microbatch size (done in launch.py)
+# the per-step batch size (across all machines and gradient accumulation steps)
 batch_size: 32
 microbatch_size: null
 

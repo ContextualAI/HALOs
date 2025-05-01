@@ -54,7 +54,6 @@ def main(config: DictConfig):
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         project_dir=config.local_run_dir,
-        gradient_accumulation_steps=config.model.gradient_accumulation_steps,
         kwargs_handlers=[ddp_kwargs],
         step_scheduler_with_optimizer=config.step_scheduler_with_optimizer,
     )
@@ -64,14 +63,14 @@ def main(config: DictConfig):
 
     # Calculate microbatch sizes
     if config.model.batch_size % accelerator.num_processes == 0:
-        config.model.microbatch_size = config.model.batch_size / accelerator.num_processes
+        config.model.microbatch_size = config.model.batch_size / (accelerator.num_processes * config.model.gradient_accumulation_steps)
     else:
-        raise ValueError(f"{config.model.batch_size} needs to be divisible by the number of processes")
+        raise ValueError(f"{config.model.batch_size} needs to be divisible by the number of processes * gradient_accumulation_steps")
 
     if config.model.eval_batch_size % accelerator.num_processes == 0:
-        config.model.eval_microbatch_size = config.model.eval_batch_size / accelerator.num_processes
+        config.model.eval_microbatch_size = config.model.eval_batch_size / (accelerator.num_processes * config.model.gradient_accumulation_steps)
     else:
-        raise ValueError(f"{config.model.eval_batch_size} needs to be divisible by the number of processes")
+        raise ValueError(f"{config.model.eval_batch_size} needs to be divisible by the number of processes * gradient_accumulation_steps")
 
     if config.eval_every % config.model.batch_size != 0:
         accelerator.print('WARNING: eval_every must be divisible by batch_size')
@@ -269,7 +268,7 @@ def main(config: DictConfig):
         policy, optimizer = accelerator.prepare(policy, optimizer)
 
     warmup_steps = train_iterator.num_training_steps * config.warmup
-    warmup_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=1.0, total_iters=warmup_steps)
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
 
     if config.loss.dataloader == "SFTDataLoader":
         main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - warmup_steps, eta_min=0)

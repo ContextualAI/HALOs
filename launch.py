@@ -149,6 +149,7 @@ def main(config: DictConfig):
         tokenizer,
         split='train',
         microbatch_size=config.model.microbatch_size,
+        global_batch_size=config.model.batch_size,
         n_epochs=config.n_epochs,
         n_examples=config.n_examples,
         num_skip=num_skip,
@@ -159,6 +160,7 @@ def main(config: DictConfig):
         tokenizer,
         split='test',
         microbatch_size=config.model.eval_microbatch_size,
+        global_batch_size=config.model.batch_size,
         n_examples=config.n_eval_examples, 
         n_epochs=(1 if config.n_eval_examples is None else None),
         **data_iterator_kwargs

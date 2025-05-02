@@ -41,6 +41,7 @@ class DataLoader:
                  num_processes: int = 1,
                  split: str = 'train',
                  microbatch_size: int = 1,
+                 global_batch_size: int = 1,
                  max_length: int = 512,
                  max_prompt_length: int = 128,
                  max_prompt_count: int = None,
@@ -59,7 +60,7 @@ class DataLoader:
         self.control_tokens = control_tokens
         self.split = split
         self.microbatch_size = microbatch_size
-        self.global_batch_size = int(self.microbatch_size * self.num_processes)
+        self.global_batch_size = global_batch_size
         self.max_length = max_length
         self.max_prompt_length = max_prompt_length
         self.max_prompt_count = max_prompt_count

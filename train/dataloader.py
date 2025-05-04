@@ -610,13 +610,6 @@ class GroupUnpairedPreferenceDataLoader(UnpairedPreferenceDataLoader):
             groups_per_prompt[tup[0].prompt_id].append(i)
             counts_per_prompt[tup[0].prompt_id] += 1
 
-        # number of outputs per prompt should be the same
-        min_count_per_prompt = min(counts_per_prompt.values())
-        max_count_per_prompt = max(counts_per_prompt.values())
-
-        if min_count_per_prompt != max_count_per_prompt:
-            raise Warning(f"number of outputs varies across examples; to simplify batching, only {min_count_per_prompt} will be used")
-        
         process_index = 0
         process_data = []
         prompt_ids = list(groups_per_prompt.keys())
@@ -625,8 +618,6 @@ class GroupUnpairedPreferenceDataLoader(UnpairedPreferenceDataLoader):
         # examples should be distributed so that two examples with the same prompt should be in the same minibatch 
         # even if in different microbatches across different processes
         for prompt_id in prompt_ids:
-            groups_per_prompt[prompt_id] = groups_per_prompt[prompt_id][:min_count_per_prompt]
-
             for i in groups_per_prompt[prompt_id]:
                 if process_index == self.process_index:  
                     process_data.append(flat_data[i])

@@ -144,8 +144,6 @@ class BasicTrainer(object):
         Returns:
             The rejection mask (microbatch_size, sequence length)
         """
-        torch.manual_seed(self.seed)
-            
         forward_rv = torch.distributions.beta.Beta(self.config.humanline_gamma_R, self.config.humanline_beta_R)
         forward_M = (reference_logps - policy_logps).exp().max().item()
         forward_sample = forward_rv.sample(policy_logps.shape).to(self.accelerator.device)
@@ -376,6 +374,7 @@ class BasicTrainer(object):
                         loss, metrics = self.get_batch_metrics(batch)
                         loss = loss / self.config.model.gradient_accumulation_steps
                         self.accelerator.backward(loss)
+                        delete_dicts(batch)
                     
                         for k, v in metrics.items():
                             batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
@@ -1142,6 +1141,7 @@ class GRPOTrainer(BasicTrainer):
             group_size
         )
 
+        metrics[f'rewards_{mode}/groupsize'] = group_size
         metrics[f'rewards_{mode}/rewards'] = scores
         metrics[f'rewards_{mode}/weighted_advantage'] = self.accelerator.gather(weighted_advantage)
         metrics[f'rewards_{mode}/KL'] = self.accelerator.gather(KL)

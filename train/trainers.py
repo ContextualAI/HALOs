@@ -383,7 +383,7 @@ class BasicTrainer(object):
                 batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
                 self.optimizer.step()
-                if self.config.sync_reference or self.config.humanline or self.config.online:
+                if self.config.sync_reference or self.config.humanline:
                     self.sync_reference_with_policy()
 
             self.scheduler.step()
@@ -1460,7 +1460,7 @@ class PPOTrainer(BasicTrainer):
                 batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
                 
                 self.optimizer.step()
-                if self.config.sync_reference or self.config.humanline or self.config.online:
+                if self.config.sync_reference or self.config.humanline:
                     self.sync_reference_with_policy()
             
             self.scheduler.step()

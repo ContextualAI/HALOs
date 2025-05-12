@@ -170,20 +170,15 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int) -> List[Dict]:
         if len(group) < 2:
             continue
         
-        group.sort(key=lambda x: x['reward'], reverse=True)
+        random.shuffle(group)
         
-        for i in range(len(group) - 1):
-            higher_reward, lower_reward = group[i], group[i + 1]
-            
-            if higher_reward['reward'] == lower_reward['reward']:
+        for i in range(0, len(group) - 1, 2):
+            sample_A, sample_B = group[i], group[i + 1]
+
+            if sample_A['reward'] == sample_B['reward']:
                 continue
-            
-            if random.random() < 0.5:
-                sample_A, sample_B = higher_reward, lower_reward
-                label = 1
-            else:
-                sample_A, sample_B = lower_reward, higher_reward
-                label = 0
+
+            label = int(sample_A['reward'] > sample_B['reward'])
                 
             feedback_item = {
                 'prompt_id': prompt_id,
@@ -321,8 +316,24 @@ if __name__ == "__main__":
     # API-specific arguments
     parser.add_argument("--api_key", type=str, help="API key for the chosen API service")
     parser.add_argument("--api_model", type=str, default="gpt-4.1-mini", help="Model to use for API labeling")
-    parser.add_argument("--system_prompt", type=str, default="You are a helpful assistant that rates the quality of responses to given instructions.", help="System prompt for API labeling")
-    parser.add_argument("--label_prompt", type=str, default="Provide only a RATING from 0 to 10 based on how well the RESPONSE satisfied the INSTRUCTION: ", help="Prompt template for API labeling")
+    parser.add_argument("--system_prompt", type=str, default="""You are an expert evaluator for language model responses. Your task is to score the quality of responses to user queries on a scale from 1-10.
+                        \n For the given RESPONSE, consider these key factors:
+                        \n 1. Helpfulness: Does the RESPONSE directly address the INSTRUCTION with useful information?
+                        \n 2. Accuracy: Is the information provided factually correct?
+                        \n 3. Conciseness: Does the RESPONSE avoid unnecessary verbosity while remaining complete?
+                        \n 4. Natural language: Does the RESPONSE use natural, human-like language without formulaic patterns?
+                        \n 5. Instruction following: Does the RESPONSE precisely follow the INSTRUCTION ?
+                        \n 6. Reasoning quality: Does the RESPONSE demonstrate clear, logical reasoning when needed?
+                        \n 7. Creativity: For creative tasks, does the RESPONSE show originality and inventiveness?
+                        \n IMPORTANT SCORING GUIDELINES:
+                        \n - Responses that are both concise AND directly address the INSTRUCTION should receive the highest scores
+                        \n - Responses with unnecessary preambles like "I'd be happy to help" should be penalized
+                        \n - Responses that over-explain simple concepts should be penalized
+                        \n - Responses that acknowledge limitations when appropriate should be rewarded
+                        \n - Responses that provide step-by-step reasoning for complex problems should be rewarded
+                        \n - Responses that use natural, conversational language should be rewarded over formulaic responses
+                        \n Output format: Provide a single overall score from 1-10.""", help="System prompt for API labeling")
+    parser.add_argument("--label_prompt", type=str, default="Provide only a RATING from 0 to 10 based on how well the RESPONSE satisfied the INSTRUCTION according to the rubric given earlier : ", help="Prompt template for API labeling")
     # Processing arguments
     parser.add_argument("--batch_size", type=int, default=16, help="Batch size for processing")
     parser.add_argument("--max_length", type=int, default=2048, help="Maximum sequence length for input")

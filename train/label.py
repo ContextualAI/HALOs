@@ -51,7 +51,7 @@ def process_batch_with_reward_model(
             reward_scores = outputs.score.cpu().float()
         else:
             reward_scores = outputs.logits[:, 1]
-    
+
     processed_samples = []
     for i in range(len(batch['prompt'])):
         sample = {
@@ -238,7 +238,6 @@ async def main(args):
             local_files_only=True,
             trust_remote_code=True
         )
-        reward_model = accelerator.prepare(reward_model)
 
         # Initialize the dataloader for reward model processing
         dataloader = SFTDataLoader(
@@ -253,8 +252,13 @@ async def main(args):
             n_epochs=1,
             seed=args.seed
         )
-        dataloader, reward_model = accelerator.prepare(dataloader, reward_model)
-        
+
+        try:
+            dataloader, reward_model = accelerator.prepare(dataloader, reward_model)
+        except Exception as e:
+            print(f"Error preparing dataloader and reward model: {e}")
+            import pdb; pdb.set_trace()
+            
         # Initialize distributed setup if not already done
         if accelerator.num_processes > 1 and not dist.is_initialized():
             accelerator.wait_for_everyone()

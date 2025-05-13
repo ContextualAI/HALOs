@@ -157,7 +157,7 @@ def convert_to_binary_feedback(samples: List[Dict], threshold=0) -> List[Dict]:
     return feedback
 
 
-def convert_to_pairwise_feedback(samples: List[Dict], seed: int) -> List[Dict]:
+def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold=0) -> List[Dict]:
     """Convert samples to pairwise feedback format."""
     random.seed(seed)
     
@@ -175,7 +175,7 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int) -> List[Dict]:
         for i in range(0, len(group) - 1, 2):
             sample_A, sample_B = group[i], group[i + 1]
 
-            if sample_A['reward'] == sample_B['reward']:
+            if abs(sample_A['reward'] - sample_B['reward']) <= threshold:
                 continue
 
             label = int(sample_A['reward'] > sample_B['reward'])
@@ -278,7 +278,7 @@ async def main(args):
             if args.feedback_type == 'binary':
                 feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
             elif args.feedback_type == 'pairwise':
-                feedback = convert_to_pairwise_feedback(processed_samples, args.seed)
+                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
             else:
                 feedback = processed_samples
                 for x in feedback:

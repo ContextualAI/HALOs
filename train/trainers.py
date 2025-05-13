@@ -713,6 +713,7 @@ class UnpairedPreferenceTrainer(BasicTrainer):
             del reference_chosen_logps, reference_rejected_logps
 
         return losses.mean(), metrics
+        return losses.mean(), metrics
 
 
 class PairedPreferenceTrainer(BasicTrainer):
@@ -802,6 +803,7 @@ class PairedPreferenceTrainer(BasicTrainer):
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
+        return losses.mean(), metrics
         return losses.mean(), metrics
 
 
@@ -1055,6 +1057,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
         return losses.mean(), metrics
+        return losses.mean(), metrics
 
 
 class GRPOTrainer(BasicTrainer):
@@ -1149,6 +1152,7 @@ class GRPOTrainer(BasicTrainer):
         
         del policy_logps, reference_logps, scores, prompt_ids, advantages, group_size, KL, weighted_advantage
         
+        return losses.mean(), metrics
         return losses.mean(), metrics
 
 

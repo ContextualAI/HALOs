@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llama-instruct-kto
+#SBATCH --job-name=llama-instruct-kto-humanline
 #SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --ntasks-per-node=1
@@ -14,8 +14,10 @@
 
 BETA=$1
 LR=$2
-EPOCHS=$3
-GRADACC=$4
+H_ALPHA_1=$3
+H_ALPHA_2=$4
+ITERS=$5
+NORM=$6
 
 # Function to find an available port
 find_free_port() {
@@ -61,7 +63,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export EXP_NAME=llama3-8B-instruct-${BETA}-${LR}-${EPOCHS}-${GRADACC}
+export EXP_NAME=llama3-8B-instruct-humanline-${BETA}-${LR}-${H_ALPHA_1}-${H_ALPHA_2}-${ITERS}-${NORM}-ktohumanline
 export CKPT=/scratch/gpfs/ke7953/models/\$EXP_NAME/FINAL
 
 accelerate launch \
@@ -74,13 +76,8 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} \
-    ++humanline=false ++n_epochs=${EPOCHS} \
-    ++model.batch_size=32 ++model.gradient_accumulation_steps=${GRADACC} ++model.eval_batch_size=32
-
-# lm_eval --model hf \
-#   --model_args pretrained=\$CKPT,tokenizer=\$CKPT,parallelize=True \
-#   --tasks arc_easy,arc_challenge,winogrande,bbh_cot_fewshot,gsm8k_cot \
-#   --batch_size 4
+    ++humanline=true ++humanline_gamma_R=${H_ALPHA_1} ++humanline_gamma_P=${H_ALPHA_2} ++humanline_iters=${ITERS} ++n_epochs=1 \
+    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++model.max_grad_norm=${NORM}
 
 python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json
 

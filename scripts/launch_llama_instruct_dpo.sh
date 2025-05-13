@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llama-instruct-kto
+#SBATCH --job-name=llama-instruct-dpo
 #SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --ntasks-per-node=1
@@ -9,7 +9,6 @@
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclude=della-j14g1
 #SBATCH --constraint=rh9|rh8
 
 BETA=$1
@@ -61,7 +60,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export EXP_NAME=llama3-8B-instruct-${BETA}-${LR}-${EPOCHS}-${GRADACC}
+export EXP_NAME=llama3-8B-instruct-dpo-${BETA}-${LR}-${EPOCHS}-${GRADACC}
 export CKPT=/scratch/gpfs/ke7953/models/\$EXP_NAME/FINAL
 
 accelerate launch \
@@ -69,7 +68,7 @@ accelerate launch \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    launch.py loss=kto model=llama train_datasets=[ultrafeedback_armorm] test_datasets=[ultrafeedback_armorm] exp_name=\$EXP_NAME \
+    launch.py loss=dpo model=llama train_datasets=[ultrafeedback_armorm] test_datasets=[ultrafeedback_armorm] exp_name=\$EXP_NAME \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \

@@ -21,7 +21,7 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn.functional as F
 import torch.nn as nn
-import transformers
+import contextlib
 import gc
 from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, AutoModelForBradleyTerry
 from omegaconf import OmegaConf, DictConfig
@@ -144,8 +144,6 @@ class BasicTrainer(object):
         Returns:
             The rejection mask (microbatch_size, sequence length)
         """
-        torch.manual_seed(self.seed)
-            
         forward_rv = torch.distributions.beta.Beta(self.config.humanline_gamma_R, self.config.humanline_beta_R)
         forward_M = (reference_logps - policy_logps).exp().max().item()
         forward_sample = forward_rv.sample(policy_logps.shape).to(self.accelerator.device)
@@ -340,10 +338,11 @@ class BasicTrainer(object):
 
         last_log = None
         batch_metrics = defaultdict(list)
+        accumulated_batches = []
 
-        for batch in self.train_iterator:
+        for train_batch in self.train_iterator:
             # EVALUATION
-            if self.example_counter % self.config.eval_every == 0 or (self.example_counter == 0 and self.config.do_first_eval):
+            if accumulated_batches == [] and ((self.example_counter % self.config.eval_every == 0) or (self.example_counter == 0 and self.config.do_first_eval)):
                 results = self.eval()
 
                 if self.example_counter > 0:
@@ -358,63 +357,65 @@ class BasicTrainer(object):
                 delete_dicts(results) 
             
             # TRAINING
+            accumulated_batches.append(train_batch)
+            if len(accumulated_batches) < self.config.model.gradient_accumulation_steps:
+                continue
+
             self.policy.train()
-            accumulated = 0
             start_time = time.time()
             
-            with self.accelerator.accumulate(self.policy):
-                batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+            for i in range(self.config.humanline_iters if self.config.humanline else 1):
+                self.optimizer.zero_grad()
 
-                for i in range(self.config.humanline_iters if self.config.humanline else 1):
-                    loss, metrics = self.get_batch_metrics(batch)
-                    self.accelerator.backward(loss)
-                
-                    for k, v in metrics.items():
-                        batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
+                for batch_idx, batch in enumerate(accumulated_batches):  
+                    # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
+                    with contextlib.nullcontext() if batch_idx + 1 == len(accumulated_batches) else self.accelerator.no_sync(self.policy):
+                        batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                        loss, metrics = self.get_batch_metrics(batch)
+                        loss = loss / self.config.model.gradient_accumulation_steps
+                        self.accelerator.backward(loss)
+                        delete_dicts(batch)
+                    
+                        for k, v in metrics.items():
+                            batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
-                    grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                    batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
-                    self.optimizer.step()
-                    self.optimizer.zero_grad()
+                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
-                    if self.config.sync_reference or self.config.humanline or self.config.online:
-                        self.sync_reference_with_policy()
+                self.optimizer.step()
+                if self.config.sync_reference or self.config.humanline or self.config.online:
+                    self.sync_reference_with_policy()
 
-                self.scheduler.step()
-                accumulated += 1
-                
-                step_time = time.time() - start_time
-                examples_per_second = self.config.model.batch_size / step_time
-                batch_metrics['examples_per_second'].append(examples_per_second)
-                
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
+            self.scheduler.step()
+            step_time = time.time() - start_time
+            examples_per_second = self.config.model.batch_size / step_time
+            batch_metrics['examples_per_second'].append(examples_per_second)
+            
+            self.batch_counter += 1
+            self.example_counter += self.config.model.batch_size
 
-                if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
-                    mean_train_metrics = {}
-                    for k, v in batch_metrics.items():
-                        if len(v) > 0:
-                            mean_train_metrics[k] = sum(v) / len(v)
+            if last_log is None or time.time() - last_log > self.config.minimum_log_interval_secs:
+                mean_train_metrics = {}
+                for k, v in batch_metrics.items():
+                    if len(v) > 0:
+                        mean_train_metrics[k] = sum(v) / len(v)
 
-                    mean_train_metrics['counters/examples'] = self.example_counter
-                    mean_train_metrics['counters/updates'] = self.batch_counter
-                    mean_train_metrics['counters/lr'] = self.scheduler.get_last_lr()[0]
-                    self.accelerator.print(f'train stats after {self.batch_counter} steps: {formatted_dict(mean_train_metrics)}')
+                mean_train_metrics['counters/examples'] = self.example_counter
+                mean_train_metrics['counters/updates'] = self.batch_counter
+                mean_train_metrics['counters/lr'] = self.scheduler.get_last_lr()[0]
+                self.accelerator.print(f'train stats after {self.batch_counter} steps: {formatted_dict(mean_train_metrics)}')
 
-                    if self.config.wandb.enabled and self.accelerator.is_main_process:
-                        wandb.log(mean_train_metrics, step=self.example_counter)
+                if self.config.wandb.enabled and self.accelerator.is_main_process:
+                    wandb.log(mean_train_metrics, step=self.example_counter)
 
-                    last_log = time.time()
-                    batch_metrics = defaultdict(list)
-                else:
-                    self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+                last_log = time.time()
+                batch_metrics = defaultdict(list)
+            else:
+                self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-                delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
-
-                if accumulated >= self.config.model.gradient_accumulation_steps:
-                    self.free_memory()
-                    accumulated = 0
-
+            delete_dicts(metrics, batch_metrics, mean_train_metrics)
+            accumulated_batches = []
+            self.free_memory()
 
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
@@ -711,7 +712,7 @@ class UnpairedPreferenceTrainer(BasicTrainer):
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
 class PairedPreferenceTrainer(BasicTrainer):
@@ -801,7 +802,7 @@ class PairedPreferenceTrainer(BasicTrainer):
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
 class DPOTrainer(PairedPreferenceTrainer):
@@ -1053,7 +1054,7 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
         del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
 class GRPOTrainer(BasicTrainer):
@@ -1140,6 +1141,7 @@ class GRPOTrainer(BasicTrainer):
             group_size
         )
 
+        metrics[f'rewards_{mode}/groupsize'] = group_size
         metrics[f'rewards_{mode}/rewards'] = scores
         metrics[f'rewards_{mode}/weighted_advantage'] = self.accelerator.gather(weighted_advantage)
         metrics[f'rewards_{mode}/KL'] = self.accelerator.gather(KL)
@@ -1147,7 +1149,7 @@ class GRPOTrainer(BasicTrainer):
         
         del policy_logps, reference_logps, scores, prompt_ids, advantages, group_size, KL, weighted_advantage
         
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
 class PPOTrainer(BasicTrainer):
@@ -1411,10 +1413,11 @@ class PPOTrainer(BasicTrainer):
         
         last_log = None
         batch_metrics = defaultdict(list)
+        accumulated_batches = []
 
-        for batch in self.train_iterator:
+        for train_batch in self.train_iterator:
             # EVALUATION
-            if self.example_counter % self.config.eval_every == 0 or (self.example_counter == 0 and self.config.do_first_eval):
+            if accumulated_batches == [] and ((self.example_counter % self.config.eval_every == 0) or (self.example_counter == 0 and self.config.do_first_eval)):
                 results = self.eval()
 
                 if self.example_counter > 0:
@@ -1429,31 +1432,41 @@ class PPOTrainer(BasicTrainer):
                 delete_dicts(results)
 
             # TRAINING
+            accumulated_batches.append(train_batch)
+            if len(accumulated_batches) < self.config.model.gradient_accumulation_steps:
+                continue
+
             start_time = time.time()
+            num_update_iters = self.config.humanline_iters if self.config.humanline else self.config.loss.ppo_epochs
 
-            microbatch_size = len(batch['prompt_text'])
-            global_batch_dict = self.get_global_batch_dict(batch)
+            for _ in range(num_update_iters):
+                self.optimizer.zero_grad()
+           
+                for batch_idx, batch in enumerate(accumulated_batches):  
+                    # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
+                    with contextlib.nullcontext() if batch_idx + 1 == len(accumulated_batches) else self.accelerator.no_sync(self.policy):
+                        microbatch_size = len(batch['prompt_text'])
+                        global_batch_dict = self.get_global_batch_dict(batch)
+                        loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, microbatch_size, mode='train')
+                        loss = loss / self.config.model.gradient_accumulation_steps
 
-            for ppo_epoch in range(self.config.loss.ppo_epochs):
-                with self.accelerator.accumulate(self.policy):
-                    loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, microbatch_size, mode='train')
+                        for k, v in local_batch_metrics.items():
+                            batch_metrics[k].extend(v)
 
-                    for k, v in local_batch_metrics.items():
-                        batch_metrics[k].extend(v)
-
-                    self.accelerator.backward(loss)
-                    v_head_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
-                    pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
-                    batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
-                    self.optimizer.step()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
-
+                        self.accelerator.backward(loss)
+                    
+                v_head_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
+                pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
+                batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
+                
+                self.optimizer.step()
+            
+            self.scheduler.step()
             self.batch_counter += 1
-            self.example_counter += microbatch_size * self.accelerator.num_processes
+            self.example_counter += self.config.model.batch_size
 
             step_time = time.time() - start_time
-            examples_per_second = (microbatch_size * self.accelerator.num_processes) / step_time
+            examples_per_second = self.config.model.batch_size / step_time
             batch_metrics['examples_per_second'].append(examples_per_second)
 
             delete_dicts(global_batch_dict, batch, local_batch_metrics)
@@ -1477,6 +1490,9 @@ class PPOTrainer(BasicTrainer):
                 batch_metrics = defaultdict(list)    
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+
+            accumulated_batches = []
+            self.free_memory()
 
     def get_batch_metrics(self, global_batch_dict: Dict, microbatch_size: int=0, mode:str='train'):
         """

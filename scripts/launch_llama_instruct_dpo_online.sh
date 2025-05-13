@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=llama-instruct-kto-online
+#SBATCH --job-name=llama-instruct-dpo-online
 #SBATCH --nodes=1
-#SBATCH --mem=100G
+#SBATCH --mem=50G
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:4
 #SBATCH --cpus-per-task=8
@@ -9,7 +9,6 @@
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclude=della-j14g1
 #SBATCH --constraint=rh9|rh8
 
 BETA=$1
@@ -51,7 +50,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-kto-online
+export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-dpo-online
 
 mkdir \$CACHE_DIR
 
@@ -79,7 +78,7 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
     if [ \$PYTHON_EXIT_CODE -eq 0 ]; then
         echo \"Training on \$CUMULATIVE_PROMPTS through \$END_CUMULATIVE_PROMPTS prompts ... \"
         
-        EXP_NAME=llama3-8B-instruct-kto-\${CUMULATIVE_PROMPTS}
+        EXP_NAME=llama3-8B-instruct-dpo-\${CUMULATIVE_PROMPTS}
 
         # Label samples with API (must ssh into the login node for internet access)
         ssh della-gpu \"source ~/.bashrc && \
@@ -94,13 +93,13 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
             MODEL_LOAD_ARG=\"++model.load_from=\$CURRENT_CKPT ++model.from_checkpoint=\$CURRENT_CKPT \"
         fi
         
-        # Train KTO model on the newly sampled and labeled data
+        # Train DPO model on the newly sampled and labeled data
         accelerate launch \
             --config_file accelerate_config/fsdp_4gpu.yaml \
             --machine_rank \$SLURM_PROCID \
             --main_process_ip \$MASTER_ADDR \
             --main_process_port \$MASTER_PORT \
-            launch.py loss=kto ++loss.beta=${BETA} model=llama exp_name=\$EXP_NAME \
+            launch.py loss=dpo ++loss.beta=${BETA} model=llama exp_name=\$EXP_NAME \
             train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] ++lr=${LR} \
             ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG \

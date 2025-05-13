@@ -44,6 +44,7 @@ def process_batch_with_reward_model(
     accelerator: Accelerator
 ) -> List[Dict]:
     """Process a batch through the reward model using the already tokenized sequences."""
+
     processed_samples = []
     chop = lambda txt: re.sub(r'([.!?])[^.!?]*\Z', r'\1', txt.strip())
 

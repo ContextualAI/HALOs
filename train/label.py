@@ -23,9 +23,10 @@ import torch
 import random
 from accelerate import Accelerator
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
-from tqdm import tqdm
+from tqdm import tqdm, trange
 from typing import List, Dict, Optional, Union
 import re
+import os
 from .utils import StreamingJSONWriter, get_api_completion
 from .dataloader import SFTDataLoader
 from collections import defaultdict
@@ -35,48 +36,43 @@ import torch.distributed as dist
 
 
 def process_batch_with_reward_model(
-    batch: Dict,
+    samples: List,
     reward_model: AutoModelForSequenceClassification,
+    tokenizer: AutoTokenizer,
     accelerator: Accelerator
 ) -> List[Dict]:
     """Process a batch through the reward model using the already tokenized sequences."""
-    
-    reward_model.eval()
-    with torch.no_grad():
-        outputs = reward_model(
-            input_ids=batch['target_combined_input_ids'],
-            attention_mask=batch['target_combined_attention_mask']
-        )
-        if args.reward_model_path == "RLHFlow/ArmoRM-Llama3-8B-v0.1":
-            reward_scores = outputs.score.cpu().float()
-        else:
-            reward_scores = outputs.logits[:, 1]
-    
     processed_samples = []
-    for i in range(len(batch['prompt'])):
-        sample = {
-            'prompt': batch['prompt'][i],
-            'instruction': batch['original_prompt'][i] if 'original_prompt' in batch else batch['prompt'][i][0]['content'],
-            'output': batch['target'][i], 
-            'reward': reward_scores[i].item(),
-            'prompt_id': batch['prompt_id'][i],
-        }
-        processed_samples.append(sample)
+    chop = lambda txt: re.sub(r'([.!?])[^.!?]*\Z', r'\1', txt.strip())
+
+    for i in trange(len(samples), disable=(not accelerator.is_main_process)):
+        if i % accelerator.num_processes == accelerator.process_index:
+            input_ids = tokenizer.apply_chat_template(
+                samples[i]["prompt"] + [{"role":"assistant", "content":chop(samples[i]["output"])}],
+                return_tensors="pt",
+                max_length=2048,
+            ).to(accelerator.device)
+
+            with torch.no_grad():
+                outputs = reward_model(
+                    input_ids=input_ids,
+                )
+                if args.reward_model_path == "RLHFlow/ArmoRM-Llama3-8B-v0.1":
+                    reward_scores = outputs.score
+                else:
+                    reward_scores = outputs.logits[:, 1]
     
-    gathered_samples = [None] * accelerator.num_processes
-        
-    # Return gathered samples from all processes, not just main process
-    # This ensures samples from all processes are included
-    dist.all_gather_object(gathered_samples, processed_samples)
+            processed_sample = samples[i].copy()
+            processed_sample['reward'] = reward_scores[0].item()
+            # since a dataloader isn't used, the output has to be explicitly formatted
+            processed_sample['output'] = [{ "role" : "assistant", "content" : processed_sample['output'] }]
+            processed_samples.append(processed_sample)
     
-    if accelerator.is_main_process:
-        return [item for sublist in gathered_samples for item in sublist]
-    
-    return []
+    return processed_samples
 
 
 async def process_samples_with_api(
-    samples: Dict,
+    samples: List,
     client: openai.AsyncOpenAI,
     system_prompt: str,
     label_prompt: str,
@@ -175,7 +171,7 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold=0) ->
         for i in range(0, len(group) - 1, 2):
             sample_A, sample_B = group[i], group[i + 1]
 
-            if abs(sample_A['reward'] - sample_B['reward']) <= threshold:
+            if abs(float(sample_A['reward']) - float(sample_B['reward'])) <= float(threshold):
                 continue
 
             label = int(sample_A['reward'] > sample_B['reward'])
@@ -221,52 +217,32 @@ async def main(args):
         print(f"Labelled {len(processed_samples)} samples using {args.api_type} API")
     else:
         if accelerator.is_main_process:
-            print(f"Loading reward model from {args.reward_model_path}")
+            accelerator.print(f"Loading reward model from {args.reward_model_path}")
 
-        reward_model = AutoModelForSequenceClassification.from_pretrained(
-            args.reward_model_path,
-            local_files_only=True,
-            trust_remote_code=True
-        )
-        tokenizer = AutoTokenizer.from_pretrained(
-            args.reward_model_path,
-            local_files_only=True,
-            trust_remote_code=True
-        )
-        reward_model = accelerator.prepare(reward_model)
-
-        # Initialize the dataloader for reward model processing
-        dataloader = SFTDataLoader(
-            dataset_names=[args.samples_path],
-            tokenizer=tokenizer,
-            process_index=accelerator.process_index,
-            num_processes=accelerator.num_processes,
-            split='train',
-            microbatch_size=(args.batch_size // accelerator.num_processes),
-            max_length=args.max_length,
-            max_prompt_length=args.max_prompt_length,
-            n_epochs=1,
-            seed=args.seed
-        )
-        dataloader, reward_model = accelerator.prepare(dataloader, reward_model)
+        # trust_remote_code is necessary for Armo RM to be downloaded correctly
+        reward_model = AutoModelForSequenceClassification.from_pretrained(args.reward_model_path, trust_remote_code=True)
+        tokenizer = AutoTokenizer.from_pretrained(args.reward_model_path, trust_remote_code=True)
+        reward_model, tokenizer, samples = accelerator.prepare(reward_model, tokenizer, samples)
         
         # Initialize distributed setup if not already done
         if accelerator.num_processes > 1 and not dist.is_initialized():
             accelerator.wait_for_everyone()
+            samples = samples[:((len(samples) // accelerator.num_processes) * accelerator.num_processes)]
             
             if accelerator.is_main_process:
                 dist.init_process_group(backend='nccl')
         
-        processed_samples = []
-        for batch in tqdm(dataloader, disable=not accelerator.is_main_process):
-            batch_samples = process_batch_with_reward_model(batch, reward_model, accelerator)
-            if accelerator.is_main_process:
-                processed_samples.extend(batch_samples)
-        
-        # Wait for all processes to complete
+        processed_samples = process_batch_with_reward_model(samples, reward_model, tokenizer, accelerator)
+        json.dump(processed_samples, open(f'temp_{accelerator.process_index}.json', 'w'))
         accelerator.wait_for_everyone()
+        processed_samples = []
 
-        print(f"Labelled {len(processed_samples)} samples using {args.reward_model_path}")
+        if accelerator.is_main_process:
+            for i in range(accelerator.num_processes):
+                processed_samples.extend(json.load(open(f'temp_{i}.json')))
+                os.remove(f'temp_{i}.json')
+
+            accelerator.print(f"Labelled {len(processed_samples)} samples using {args.reward_model_path}")
 
     # Set up output writer
     if accelerator.is_main_process:

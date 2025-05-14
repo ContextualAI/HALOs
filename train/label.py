@@ -250,7 +250,6 @@ async def main(args):
         if accelerator.is_main_process:
             accelerator.accelerator.print(f"Loading reward model from {args.reward_model_path}")
 
-
         # trust_remote_code is necessary for Armo RM to be downloaded correctly
         reward_model = AutoModelForSequenceClassification.from_pretrained(args.reward_model_path, trust_remote_code=True)
         tokenizer = AutoTokenizer.from_pretrained(args.reward_model_path, trust_remote_code=True)

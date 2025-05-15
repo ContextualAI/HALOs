@@ -65,7 +65,7 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
         --datasets ultrafeedback_armorm \
         --mode train \
         --split train \
-        --num_samples_per_prompt 8 \
+        --num_samples_per_prompt 4 \
         --num_prompts ${PROMPTS_PER_ROUND} \
         --num_skip \$CUMULATIVE_PROMPTS \
         --num_epochs 1

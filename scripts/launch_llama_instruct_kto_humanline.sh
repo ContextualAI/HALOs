@@ -75,7 +75,7 @@ accelerate launch \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
-    ++loss.beta=${BETA} \
+    ++loss.beta=${BETA} ++n_examples=10_000 \
     ++humanline=true ++humanline_gamma_R=${H_ALPHA_1} ++humanline_gamma_P=${H_ALPHA_2} ++humanline_iters=${ITERS} ++n_epochs=1 \
     ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++model.max_grad_norm=${NORM}
 

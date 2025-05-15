@@ -75,7 +75,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} ++loss.epsilon=${EPS} \
-    ++humanline=false ++n_epochs=${EPOCHS} ++sync_reference=true ++model.max_grad_norm=0.1 \
+    ++humanline=false ++n_epochs=${EPOCHS} ++n_examples=10_000 \
     ++model.batch_size=32 ++model.gradient_accumulation_steps=${GRADACC} ++model.eval_batch_size=32
 
 # lm_eval --model hf \

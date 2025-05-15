@@ -1,10 +1,10 @@
 # Group Relative Policy Optimization
 
 # the weight placed on the KL penalty
-beta: 0.10
+beta: 0.01
 
 # used for clipping the log-ratio, as in PPO
-epsilon: 0.10
+epsilon: 0.01
 
 # whether to use sequence level rewards
 sequence_level: true

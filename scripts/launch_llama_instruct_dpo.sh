@@ -9,7 +9,6 @@
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --constraint=rh9|rh8
 
 BETA=$1
 LR=$2
@@ -72,8 +71,8 @@ accelerate launch \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
-    ++loss.beta=${BETA} \
-    ++humanline=false ++n_epochs=${EPOCHS} \
+    ++loss.beta=${BETA} ++n_examples=10_000 \
+    ++humanline=false \
     ++model.batch_size=32 ++model.gradient_accumulation_steps=${GRADACC} ++model.eval_batch_size=32
 
 # lm_eval --model hf \

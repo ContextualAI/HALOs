@@ -383,7 +383,7 @@ class BasicTrainer(object):
                 batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
                 self.optimizer.step()
-                if self.config.sync_reference or self.config.humanline or self.config.online:
+                if self.config.sync_reference or self.config.humanline:
                     self.sync_reference_with_policy()
 
             self.scheduler.step()
@@ -1267,8 +1267,8 @@ class PPOTrainer(BasicTrainer):
             gae = delta + self.config.loss.gamma * self.config.loss.lam * gae
             advantages_reversed.append(gae)
             
-            discounted_future_rewards_reversed.append(discounted_future_reward)
             discounted_future_reward = rewards[:, t] + self.config.loss.gamma * discounted_future_reward
+            discounted_future_rewards_reversed.append(discounted_future_reward)
 
         advantages = (torch.stack(advantages_reversed[::-1]).transpose(0, 1) * masks)
         returns = (advantages + values).contiguous()
@@ -1301,7 +1301,7 @@ class PPOTrainer(BasicTrainer):
         policy_losses_clipped = -batch['advantages'] * torch.clamp(ratio, 1 - self.config.loss.cliprange, 1 + self.config.loss.cliprange)
         policy_loss = masked_mean(torch.max(policy_losses, policy_losses_clipped), batch['masks'])
 
-        KL_penalty = masked_mean(batch['logprobs'] - episode['logprobs'], batch['masks'])
+        KL_penalty = masked_mean(episode['logprobs'] - batch['logprobs'], batch['masks'])
 
         loss = policy_loss + self.config.loss.critic_coef * critic_loss + self.config.loss.KL_coef * KL_penalty
 
@@ -1444,22 +1444,24 @@ class PPOTrainer(BasicTrainer):
            
                 for batch_idx, batch in enumerate(accumulated_batches):  
                     # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
-                    with contextlib.nullcontext() if batch_idx + 1 == len(accumulated_batches) else self.accelerator.no_sync(self.policy):
-                        microbatch_size = len(batch['prompt_text'])
-                        global_batch_dict = self.get_global_batch_dict(batch)
-                        loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, microbatch_size, mode='train')
-                        loss = loss / self.config.model.gradient_accumulation_steps
+                    microbatch_size = len(batch['prompt_text'])
+                    global_batch_dict = self.get_global_batch_dict(batch)
+                    loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, microbatch_size, mode='train')
+                    loss = loss / self.config.model.gradient_accumulation_steps
+                    delete_dicts(batch)
 
-                        for k, v in local_batch_metrics.items():
-                            batch_metrics[k].extend(v)
+                    for k, v in local_batch_metrics.items():
+                        batch_metrics[k].extend(v)
 
-                        self.accelerator.backward(loss)
+                    self.accelerator.backward(loss)
                     
-                v_head_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
-                pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
+                pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
+                v_head_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
                 batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
                 
                 self.optimizer.step()
+                if self.config.sync_reference or self.config.humanline:
+                    self.sync_reference_with_policy()
             
             self.scheduler.step()
             self.batch_counter += 1
@@ -1675,4 +1677,4 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         metrics[f'rewards_{mode}/margins'] = self.accelerator.gather((chosen_rewards - rejected_rewards).detach())
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics

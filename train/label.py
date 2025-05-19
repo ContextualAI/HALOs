@@ -166,28 +166,26 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold=0) ->
         if len(group) < 2:
             continue
         
-        random.shuffle(group)
-        
-        for i in range(0, len(group) - 1, 2):
-            sample_A, sample_B = group[i], group[i + 1]
+        group = sorted(group, key=lambda x: x['reward'], reverse=(random.random() > 0.5))
+        sample_A, sample_B = group[0], group[-1]
 
-            if abs(float(sample_A['reward']) - float(sample_B['reward'])) <= float(threshold):
-                continue
+        if abs(float(sample_A['reward']) - float(sample_B['reward'])) <= float(threshold):
+            continue
 
-            label = int(sample_A['reward'] > sample_B['reward'])
-                
-            feedback_item = {
-                'prompt_id': prompt_id,
-                'prompt': sample_A['prompt'],
-                'output_A': sample_A['output'],
-                'output_B': sample_B['output'],
-                'label': label,
-                'reward_A': sample_A['reward'],
-                'reward_B': sample_B['reward'],
-                'reward_difference': abs(sample_A['reward'] - sample_B['reward']),
-                'type': 'pairwise_feedback',
-            }
-            feedback.append(feedback_item)
+        label = int(sample_A['reward'] > sample_B['reward'])
+            
+        feedback_item = {
+            'prompt_id': prompt_id,
+            'prompt': sample_A['prompt'],
+            'output_A': sample_A['output'],
+            'output_B': sample_B['output'],
+            'label': label,
+            'reward_A': sample_A['reward'],
+            'reward_B': sample_B['reward'],
+            'reward_difference': abs(sample_A['reward'] - sample_B['reward']),
+            'type': 'pairwise_feedback',
+        }
+        feedback.append(feedback_item)
     
     return feedback
 

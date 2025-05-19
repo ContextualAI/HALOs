@@ -9,7 +9,7 @@ ninja --version
 echo $?
 conda install pytorch=2.4.0 pytorch-cuda=12.1 -c pytorch -c nvidia
 pip install flash-attn==2.6.3 --no-build-isolation
-pip install transformers==4.46.2
+pip install transformers==4.51.3
 pip install peft==0.12.0
 pip install datasets==2.20.0
 pip install accelerate==0.33.0

@@ -158,7 +158,7 @@ class BasicTrainer(object):
         
         return humanline_mask
     
-    def get_ratios(self, policy_logps, reference_logps, sequence_level=False):
+    def get_ratios(self, policy_logps, reference_logps):
         """
         Return the probability ratio under the policy vs the reference [policy(y|x)/reference(y|x)].
         Apply humanline sampling if specified.
@@ -166,7 +166,6 @@ class BasicTrainer(object):
         Args:
             policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
             reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
-            sequence_level: if true, return the probability for the entire sequence; otherwise, per-token
 
         Returns:
             The probability ratios (microbatch_size, sequence length) if sequence_level; otherwise, (microbatch_size, 1)
@@ -175,9 +174,6 @@ class BasicTrainer(object):
 
         if self.config.humanline:
             logratio = torch.where(self.get_humanline_mask(policy_logps, reference_logps), logratio.detach(), logratio)
-
-        if sequence_level:
-            logratio = logratio.sum(-1)
 
         ratio = logratio.exp()
 
@@ -382,9 +378,10 @@ class BasicTrainer(object):
                 grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
                 batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
-                self.optimizer.step()
                 if self.config.sync_reference or self.config.humanline:
                     self.sync_reference_with_policy()
+                    
+                self.optimizer.step()
 
             self.scheduler.step()
             step_time = time.time() - start_time
@@ -1069,20 +1066,20 @@ class GRPOTrainer(BasicTrainer):
             group_size: number of outputs (in entire batch) belonging to prompt associated with sequence (microbatch_size,)
 
         Returns:
-            sequence-level losses (microbatch_size,), sequence-level KL (microbatch_size,), weighted advantages (microbatch_size,)
+            average loss, average KL, average weighted advantage
         """
-        ratio = self.get_ratios(policy_logps, reference_logps, sequence_level=self.config.loss.sequence_level)
-        KL = (-ratio.log()).exp() + ratio.log() - 1
+        ratio = self.get_ratios(policy_logps, reference_logps)
+        masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype)
 
-        if not self.config.loss.sequence_level:
-            advantages = advantages.unsqueeze(-1)
-            group_size = group_size.unsqueeze(-1)
+        advantages = advantages.unsqueeze(-1)
+        group_size = group_size.unsqueeze(-1)
 
         weighted_adv = advantages * ratio
         weighted_adv_clipped =  advantages * ratio.clamp(1 - self.config.loss.epsilon, 1 + self.config.loss.epsilon)
-        losses = -1 * (torch.min(weighted_adv, weighted_adv_clipped) - self.config.loss.beta * KL) / group_size
+        per_token_KL = torch.exp(reference_logps - policy_logps) - (reference_logps - policy_logps) - 1
+        per_token_loss = -torch.min(weighted_adv, weighted_adv_clipped) + self.config.loss.beta * per_token_KL
 
-        return losses, KL.detach(), weighted_adv.detach()
+        return masked_mean(per_token_loss, masks, axis=-1), masked_mean(per_token_KL.detach(), masks, axis=-1), masked_mean(weighted_adv.detach(), masks, axis=-1)
 
     def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.

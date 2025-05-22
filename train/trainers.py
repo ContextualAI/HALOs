@@ -598,52 +598,6 @@ class SFTTrainer(BasicTrainer):
         return normalized_loss.sum(), metrics
 
 
-class HumanlineSFTTrainer(BasicTrainer):
-    use_reference_model = True
-
-    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
-        """Compute the loss and other metrics for the given batch of inputs.
-        
-        Args:
-            batch: dictionary of inputs for the batch (should contain 'target_attention_mask', 'target_input_input_ids', 
-                'target_labels' where 'target' corresponds to the SFT example)
-            mode: one of 'train', 'eval', 'sample'
-        """
-        metrics = {}
-        
-        with self.accelerator.autocast():
-            policy_chosen_logits = self.policy(
-                batch['target_combined_input_ids'], 
-                attention_mask=batch['target_combined_attention_mask'],
-            ).logits.to(self.policy_dtype)
-            
-            policy_chosen_logps = self.get_batch_logps(policy_chosen_logits, batch['target_labels'])
-            policy_chosen_logps = policy_chosen_logps.view(-1)
-            token_mask = (policy_chosen_logps != 0).float().detach()
-
-            with torch.no_grad():
-                reference_chosen_logits = self.reference_model(
-                    batch['target_combined_input_ids'], 
-                    attention_mask=batch['target_combined_attention_mask'],
-                ).logits.to(self.policy_dtype)
-                
-                reference_chosen_logps = self.get_batch_logps(reference_chosen_logits, batch['target_labels'])
-                reference_chosen_logps = reference_chosen_logps.view(-1)
-
-            humanline_mask = self.get_humanline_mask(policy_chosen_logps, reference_chosen_logps)
-            normalized_loss = torch.where(humanline_mask, -policy_chosen_logps.detach(), -policy_chosen_logps) / token_mask.sum()
-
-        # Gather losses and logps from all processes
-        metrics[f'unmasked/{mode}'] = ((1 - humanline_mask.float()) * token_mask).sum() / token_mask.sum()
-        metrics[f'tokens/{mode}'] = self.accelerator.gather(token_mask.sum()).sum()
-        metrics[f'logps/{mode}'] = self.accelerator.gather((policy_chosen_logps * token_mask).detach().sum() / token_mask.sum())
-        metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
-
-        del policy_chosen_logits, policy_chosen_logps, reference_chosen_logits, reference_chosen_logps, humanline_mask, token_mask
-
-        return normalized_loss.sum(), metrics
-
-
 class UnpairedPreferenceTrainer(BasicTrainer):
     use_reference_model = True
 

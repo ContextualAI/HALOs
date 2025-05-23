@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llama-instruct-grpo-humanline
+#SBATCH --job-name=llama-grpo-humanline
 #SBATCH --nodes=1
 #SBATCH --mem=50G
 #SBATCH --ntasks-per-node=1
@@ -9,16 +9,14 @@
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclude=della-j14g1
-#SBATCH --constraint=rh9|rh8
 
 BETA=$1
-LR=$2
-EPS=$3
-H_ALPHA_1=$4
-H_ALPHA_2=$5
-ITERS=$6
-NORM=$7
+EPS=$2
+LR=$3
+L=$4
+U=$5
+NORM=$6
+ITERS=$7
 
 # Function to find an available port
 find_free_port() {
@@ -64,7 +62,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export EXP_NAME=llama3-8B-instruct-humanline-${BETA}-${LR}-${EPS}-${H_ALPHA_1}-${H_ALPHA_2}-${ITERS}-${NORM}-grpohumanline
+export EXP_NAME=llama3-8B-instruct-grpo-humanline-${BETA}-${EPS}-${LR}-${L}-${U}-${NORM}-${ITERS}-grpohumanline
 export CKPT=/scratch/gpfs/ke7953/models/\$EXP_NAME/FINAL
 
 accelerate launch \
@@ -76,8 +74,8 @@ accelerate launch \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
-    ++loss.beta=${BETA} ++loss.epsilon=${EPS} \
-    ++humanline=true ++humanline_gamma_R=${H_ALPHA_1} ++humanline_gamma_P=${H_ALPHA_2} ++humanline_iters=${ITERS} ++n_epochs=1 ++n_examples=10_000 \
+    ++loss.beta=${BETA} ++loss.epsilon=${EPS} ++n_examples=10_000 \
+    ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} \
     ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++model.max_grad_norm=${NORM}
 
 python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json

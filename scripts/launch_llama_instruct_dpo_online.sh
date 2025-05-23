@@ -65,7 +65,7 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
         --datasets ultrafeedback_armorm \
         --mode train \
         --split train \
-        --num_samples_per_prompt 4 \
+        --num_samples_per_prompt 8 \
         --num_prompts ${PROMPTS_PER_ROUND} \
         --num_skip \$CUMULATIVE_PROMPTS \
         --num_epochs 1
@@ -108,8 +108,8 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
             launch.py loss=dpo ++loss.beta=${BETA} model=llama exp_name=\$EXP_NAME \
             train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] ++lr=${LR} \
             ++cache_dir=\$CACHE_DIR \
-            ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG ++online=true ++model.max_grad_norm=0.1 \
-            ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++sync_reference=true
+            ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG ++online=true \
+            ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++loss.sync_reference=true
 
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 

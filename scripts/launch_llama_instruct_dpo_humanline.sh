@@ -9,15 +9,13 @@
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclude=della-j14g1
 
 BETA=$1
 LR=$2
-H_ALPHA_1=$3
-H_ALPHA_2=$4
-ITERS=$5
-NORM=$6
-GRADACC=$7
+L=$3
+U=$4
+NORM=$5
+ITERS=$6
 
 # Function to find an available port
 find_free_port() {
@@ -63,7 +61,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export EXP_NAME=llama3-8B-instruct-dpo-humanline-${BETA}-${LR}-${H_ALPHA_1}-${H_ALPHA_2}-${ITERS}-${NORM}-${GRADACC}-dpohumanline
+export EXP_NAME=llama3-8B-instruct-dpo-humanline-${BETA}-${LR}-${L}-${U}-${NORM}-${ITERS}-dpohumanline
 export CKPT=/scratch/gpfs/ke7953/models/\$EXP_NAME/FINAL
 
 accelerate launch \
@@ -76,8 +74,8 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} ++n_examples=10_000 \
-    ++humanline=true ++humanline_gamma_R=${H_ALPHA_1} ++humanline_gamma_P=${H_ALPHA_2} ++humanline_iters=${ITERS} ++n_epochs=1 \
-    ++model.batch_size=32 ++model.gradient_accumulation_steps=${GRADACC} ++model.eval_batch_size=32 ++model.max_grad_norm=${NORM} 
+    ++humanline=true ++epsilon_P=${L} ++epsilon_R=${U} ++humanline_iters=${ITERS} \
+    ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++model.max_grad_norm=${NORM}
 
 python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json
 

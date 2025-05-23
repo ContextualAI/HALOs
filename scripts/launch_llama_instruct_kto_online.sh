@@ -1,21 +1,9 @@
 #!/bin/bash
-#SBATCH --job-name=llama-instruct-kto-online
-#SBATCH --nodes=1
-#SBATCH --mem=100G
-#SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:4
-#SBATCH --cpus-per-task=8
-#SBATCH --time=23:55:00
-#SBATCH --partition=pli-c
-#SBATCH --output=%x_%j.out
-#SBATCH --error=%x_%j.err
-#SBATCH --exclude=della-j14g1
-#SBATCH --constraint=rh9|rh8
 
 BETA=$1
 LR=$2
-TOTAL_PROMPTS=60416
-PROMPTS_PER_ROUND=1024
+TOTAL_PROMPTS=$3
+PROMPTS_PER_ROUND=$4
 
 # Function to find an available port
 find_free_port() {
@@ -53,10 +41,17 @@ init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
 export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-kto-online
 
-mkdir \$CACHE_DIR
+if [ ! -d \$CACHE_DIR ]; then
+    mkdir -p \$CACHE_DIR
+fi
 
-CURRENT_CKPT=\$MODEL_PATH
 CUMULATIVE_PROMPTS=0
+
+if [ \$CUMULATIVE_PROMPTS -eq 0 ]; then
+    CURRENT_CKPT=\$MODEL_PATH
+else
+    CURRENT_CKPT=\${CACHE_DIR}/llama3-8B-instruct-kto-\${CUMULATIVE_PROMPTS}/FINAL
+fi
 
 while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
     END_CUMULATIVE_PROMPTS=\$((CUMULATIVE_PROMPTS + ${PROMPTS_PER_ROUND}))
@@ -81,12 +76,22 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
         
         EXP_NAME=llama3-8B-instruct-kto-\${CUMULATIVE_PROMPTS}
 
-        # Label samples with API (must ssh into the login node for internet access)
-        ssh della-gpu \"source ~/.bashrc && \
-            conda activate halos && \
-            cd /home/ke7953/HALOs && \
-            accelerate launch -m train.label \$SAMPLES_FILE \$DATA_FILE \
-            --api_type openai --api_key \$OPENAI_API_KEY --feedback_type pairwise --batch_size 16 \"
+        if [ ! -f \$DATA_FILE ]; then
+            accelerate launch \
+                --config_file accelerate_config/fsdp_4gpu.yaml \
+                --machine_rank \$SLURM_PROCID \
+                --main_process_ip \$MASTER_ADDR \
+                --main_process_port \$MASTER_PORT \
+                -m train.label \$SAMPLES_FILE \$DATA_FILE --reward_model_path RLHFlow/ArmoRM-Llama3-8B-v0.1 \
+                 --feedback_type pairwise --batch_size 16 --threshold 0.01
+
+            # # Label samples with API (must ssh into the login node for internet access)
+            # ssh della-gpu \"source ~/.bashrc && \
+            #     conda activate halos && \
+            #     cd /home/ke7953/HALOs && \
+            #     accelerate launch -m train.label \$SAMPLES_FILE \$DATA_FILE \
+            #     --api_type openai --api_key \$OPENAI_API_KEY --feedback_type pairwise --batch_size 16 --threshold 0 \"
+        fi
 
         if [ \$CUMULATIVE_PROMPTS -eq 0 ]; then
             MODEL_LOAD_ARG=\"++model.load_from=\$CURRENT_CKPT ++model.from_checkpoint=null \"
@@ -103,15 +108,10 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
             launch.py loss=kto ++loss.beta=${BETA} model=llama exp_name=\$EXP_NAME \
             train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] ++lr=${LR} \
             ++cache_dir=\$CACHE_DIR \
-            ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG \
-            ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++model.max_grad_norm=0.1 \
-            ++online=true ++sync_reference=true
+            ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG ++online=true \
+            ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++loss.sync_reference=true
 
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
-
-        if [ \$CURRENT_CKPT != \$MODEL_PATH ] && [ \$SLURM_PROCID -eq 0 ]; then
-            rm -rf \$CURRENT_CKPT
-        fi
 
         CURRENT_CKPT=\$NEW_CKPT
         CUMULATIVE_PROMPTS=\$END_CUMULATIVE_PROMPTS

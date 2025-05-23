@@ -12,3 +12,5 @@ sequence_level: true
 trainer: GRPOTrainer
 
 dataloader: GroupUnpairedPreferenceDataLoader
+
+sync_reference: false

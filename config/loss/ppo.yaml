@@ -21,3 +21,5 @@ critic_coef: 0.01
 
 # coefficient on KL penalty
 KL_coef: 0.1
+
+sync_reference: false

@@ -3,3 +3,5 @@
 trainer: BradleyTerryTrainer
 
 dataloader: PairedPreferenceDataLoader
+
+sync_reference: false

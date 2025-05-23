@@ -133,35 +133,10 @@ class BasicTrainer(object):
 
         return per_token_logps * loss_mask
     
-    def get_humanline_mask(self, policy_logps, reference_logps):
-        """
-        Return a boolean mask over tokens, where True means that the token has been rejected under humanline sampling.
-
-        Args:
-            policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
-            reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
-
-        Returns:
-            The rejection mask (microbatch_size, sequence length)
-        """
-        forward_rv = torch.distributions.beta.Beta(self.config.humanline_gamma_R, self.config.humanline_beta_R)
-        forward_M = (reference_logps - policy_logps).exp().max().item()
-        forward_sample = forward_rv.sample(policy_logps.shape).to(self.accelerator.device)
-        forward_token_mask = (reference_logps - policy_logps).exp() < forward_M * forward_sample
-
-        backward_rv = torch.distributions.beta.Beta(self.config.humanline_gamma_P, self.config.humanline_beta_P)
-        backward_sample = backward_rv.sample(policy_logps.shape).to(self.accelerator.device)
-        backward_M = (policy_logps - reference_logps).exp().max().item()
-        backward_token_mask = (policy_logps - reference_logps).exp() < backward_M * backward_sample
-
-        humanline_mask = forward_token_mask | backward_token_mask
-        
-        return humanline_mask
-    
     def get_ratios(self, policy_logps, reference_logps):
         """
         Return the probability ratio under the policy vs the reference [policy(y|x)/reference(y|x)].
-        Apply humanline sampling if specified.
+        Apply humanline if specified.
 
         Args:
             policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
@@ -170,10 +145,10 @@ class BasicTrainer(object):
         Returns:
             The probability ratios (microbatch_size, sequence length) if sequence_level; otherwise, (microbatch_size, 1)
         """
-        logratio = policy_logps - reference_logps
-
         if self.config.humanline:
-            logratio = torch.where(self.get_humanline_mask(policy_logps, reference_logps), logratio.detach(), logratio)
+            logratio = (policy_logps - reference_logps).clamp(self.config.log_epsilon_P, self.config.log_epsilon_R)
+        else:
+            logratio = policy_logps - reference_logps
 
         ratio = logratio.exp()
 
@@ -182,10 +157,6 @@ class BasicTrainer(object):
     def get_sequence_rewards(self, policy_logps, reference_logps, length_normalized=False):
         """
         If regular alignment, return the HALO-defined reward for the sequence (log [policy(y|x)/reference(y|x)]).
-
-        For humanline alignment, do zero-shot rejection sampling. Assume that the examples are drawn from the 
-        reference model, zero-out the tokens that don't meet the rejection sampling criterion, then sum over what 
-        remains to get the sequence-level rewards.
         
         Args:
             policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
@@ -195,8 +166,10 @@ class BasicTrainer(object):
         Returns:
             The sequence-level rewards (microbatch_size, 1).
         """
-        mask = self.get_humanline_mask(policy_logps, reference_logps) if self.config.humanline else torch.zeros_like(policy_logps).bool()
-        token_rewards = torch.where(mask, (policy_logps - reference_logps).detach(), policy_logps - reference_logps)
+        if self.config.humanline:
+            token_rewards = (policy_logps - reference_logps).clamp(self.config.log_epsilon_P, self.config.log_epsilon_R)
+        else:
+            token_rewards = policy_logps - reference_logps
         
         normalization_factor = (token_rewards.abs() != 0).float().sum(-1) if length_normalized else 1
         sequence_rewards = token_rewards.sum(-1) / normalization_factor
@@ -378,7 +351,7 @@ class BasicTrainer(object):
                 grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
                 batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
-                if self.config.sync_reference or self.config.humanline:
+                if self.config.loss.sync_reference or self.config.humanline:
                     self.sync_reference_with_policy()
                     
                 self.optimizer.step()
@@ -1411,7 +1384,7 @@ class PPOTrainer(BasicTrainer):
                 batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
                 
                 self.optimizer.step()
-                if self.config.sync_reference or self.config.humanline:
+                if self.config.loss.sync_reference or self.config.humanline:
                     self.sync_reference_with_policy()
             
             self.scheduler.step()

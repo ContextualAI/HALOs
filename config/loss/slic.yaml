@@ -9,3 +9,5 @@ lambda_coef: 0.1
 trainer: SLiCTrainer
 
 dataloader: PairedPreferenceDataLoader
+
+sync_reference: false

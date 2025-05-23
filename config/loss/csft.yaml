@@ -5,6 +5,8 @@ trainer: SFTTrainer
 
 dataloader: ConditionalSFTDataLoader
 
+sync_reference: false
+
 # prepended to positive and negative sequences respectively
 control_tokens:
   chosen: "<|good|>"

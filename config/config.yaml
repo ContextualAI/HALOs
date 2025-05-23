@@ -94,13 +94,8 @@ load_reference_logprobs: null
 # humanline alignment (from prospect theory)
 humanline: false
 humanline_iters: 1
-humanline_gamma_R: 0.01
-humanline_gamma_P: 0.50
-humanline_beta_R: 1.0
-humanline_beta_P: 1.0
-
-# sync reference with policy every update
-sync_reference: false
+log_epsilon_P: -1.0
+log_epsilon_R: 1.5
 
 # online training
 online: false

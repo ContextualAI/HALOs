@@ -21,6 +21,7 @@ import json
 import numpy as np
 import torch
 import random
+from math import inf, isclose
 from accelerate import Accelerator
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 from tqdm import tqdm, trange
@@ -42,6 +43,10 @@ def process_batch_with_reward_model(
     accelerator: Accelerator
 ) -> List[Dict]:
     """Process a batch through the reward model using the already tokenized sequences."""
+<<<<<<< HEAD
+=======
+
+>>>>>>> 1f29cc9 (added max-gap and threshold-gap variants for creating pairwise feedback)
     processed_samples = []
     chop = lambda txt: re.sub(r'([.!?])[^.!?]*\Z', r'\1', txt.strip())
 
@@ -153,7 +158,25 @@ def convert_to_binary_feedback(samples: List[Dict], threshold=0) -> List[Dict]:
     return feedback
 
 
-def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold=0) -> List[Dict]:
+def create_pairwise_feedback_item(prompt_id, sample_A, sample_B):
+    """Create feedback item with 50% chance of swapping pairs"""
+    if random.random() < 0.5:
+        sample_A, sample_B = sample_B, sample_A
+        
+    return {
+        'prompt_id': prompt_id,
+        'prompt': sample_A['prompt'],
+        'output_A': sample_A['output'],
+        'output_B': sample_B['output'],
+        'label': int(sample_A['reward'] > sample_B['reward']),
+        'reward_A': sample_A['reward'],
+        'reward_B': sample_B['reward'],
+        'reward_difference': abs(float(sample_A['reward']) - float(sample_B['reward'])),
+        'type': 'pairwise_feedback',
+    }
+
+
+def convert_to_pairwise_feedback(samples: List[Dict], seed: int, mode='random', threshold=0) -> List[Dict]:
     """Convert samples to pairwise feedback format."""
     random.seed(seed)
     
@@ -166,6 +189,7 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold=0) ->
         if len(group) < 2:
             continue
         
+<<<<<<< HEAD
         group = sorted(group, key=lambda x: x['reward'], reverse=(random.random() > 0.5))
         sample_A, sample_B = group[0], group[-1]
 
@@ -186,6 +210,45 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, threshold=0) ->
             'type': 'pairwise_feedback',
         }
         feedback.append(feedback_item)
+=======
+        if mode == 'random':
+            random.shuffle(group)
+            for i in range(0, len(group) - 1, 2):
+                sample_A, sample_B = group[i], group[i + 1]
+                if abs(float(sample_A['reward']) - float(sample_B['reward'])) <= float(threshold):
+                    continue
+                feedback.append(create_pairwise_feedback_item(prompt_id, sample_A, sample_B))
+            
+        elif mode == 'max':
+            group.sort(key=lambda x: x['reward'], reverse=True)
+            sample_A, sample_B = group[0], group[-1]
+            if abs(float(sample_A['reward']) - float(sample_B['reward'])) > float(threshold):
+                feedback.append(create_pairwise_feedback_item(prompt_id, sample_A, sample_B))
+
+        elif mode == 'min':
+            group.sort(key=lambda x: x['reward'], reverse=True)
+            if abs(float(group[0]['reward']) - float(group[-1]['reward'])) <= float(threshold):
+                continue
+            
+            start, best_diff, eps = 0, inf, 1e-12
+            best_pairs = []
+            
+            for end in range(len(group)):
+                while start < len(group) and abs(float(group[end]['reward']) - float(group[start]['reward'])) + eps >= float(threshold):
+                    diff = abs(float(group[end]['reward']) - float(group[start]['reward']))
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_pairs = [(group[start], group[end])]
+                    elif isclose(diff, best_diff, abs_tol=eps):
+                        best_pairs.append((group[start], group[end]))
+                    start += 1
+            
+            for sample_A, sample_B in best_pairs:
+                feedback.append(create_pairwise_feedback_item(prompt_id, sample_A, sample_B))
+                
+        else:
+            raise ValueError(f"Invalid mode: {mode}")
+>>>>>>> 1f29cc9 (added max-gap and threshold-gap variants for creating pairwise feedback)
     
     return feedback
 
@@ -252,7 +315,7 @@ async def main(args):
             if args.feedback_type == 'binary':
                 feedback = convert_to_binary_feedback(processed_samples, threshold=args.threshold)
             elif args.feedback_type == 'pairwise':
-                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, threshold=args.threshold)
+                feedback = convert_to_pairwise_feedback(processed_samples, args.seed, mode=args.feedback_mode, threshold=args.threshold)
             else:
                 feedback = processed_samples
                 for x in feedback:
@@ -313,6 +376,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=2048, help="Maximum sequence length for input")
     parser.add_argument("--max_prompt_length", type=int, default=1024, help="Maximum prompt length for input")
     parser.add_argument("--feedback_type", type=str, choices=['binary', 'pairwise', None], default=None, help="Type of feedback to generate")
+    parser.add_argument("--feedback_mode", type=str, choices=['random', 'max', 'min'], default='random', help="Mode for constructing pairwise feedback")
     parser.add_argument("--threshold", type=str, default="median", help="How the reward threshold is calculated; this can also be a number (e.g., 0.5)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--split", type=str, default=None, help="Split of data")

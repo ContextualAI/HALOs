@@ -43,10 +43,7 @@ def process_batch_with_reward_model(
     accelerator: Accelerator
 ) -> List[Dict]:
     """Process a batch through the reward model using the already tokenized sequences."""
-<<<<<<< HEAD
-=======
 
->>>>>>> 1f29cc9 (added max-gap and threshold-gap variants for creating pairwise feedback)
     processed_samples = []
     chop = lambda txt: re.sub(r'([.!?])[^.!?]*\Z', r'\1', txt.strip())
 
@@ -189,28 +186,6 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, mode='random', 
         if len(group) < 2:
             continue
         
-<<<<<<< HEAD
-        group = sorted(group, key=lambda x: x['reward'], reverse=(random.random() > 0.5))
-        sample_A, sample_B = group[0], group[-1]
-
-        if abs(float(sample_A['reward']) - float(sample_B['reward'])) <= float(threshold):
-            continue
-
-        label = int(sample_A['reward'] > sample_B['reward'])
-            
-        feedback_item = {
-            'prompt_id': prompt_id,
-            'prompt': sample_A['prompt'],
-            'output_A': sample_A['output'],
-            'output_B': sample_B['output'],
-            'label': label,
-            'reward_A': sample_A['reward'],
-            'reward_B': sample_B['reward'],
-            'reward_difference': abs(sample_A['reward'] - sample_B['reward']),
-            'type': 'pairwise_feedback',
-        }
-        feedback.append(feedback_item)
-=======
         if mode == 'random':
             random.shuffle(group)
             for i in range(0, len(group) - 1, 2):
@@ -248,8 +223,7 @@ def convert_to_pairwise_feedback(samples: List[Dict], seed: int, mode='random', 
                 
         else:
             raise ValueError(f"Invalid mode: {mode}")
->>>>>>> 1f29cc9 (added max-gap and threshold-gap variants for creating pairwise feedback)
-    
+
     return feedback
 
 

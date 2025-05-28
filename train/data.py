@@ -532,6 +532,8 @@ def get_ultrafeedback_armorm(split: str) -> Dataset:
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
         data[key].sft_index = 0
+        # generation with max score was set as chosen; one with min score was set as rejected
+        data[key].scores.extend([max(row['all_rm_scores']), min(row['all_rm_scores'])])
         data[key].dataset_name = data.name
         data[key].remove_extra_spaces()
 
@@ -560,6 +562,8 @@ def get_ultrafeedback_armorm_gemma(split: str) -> Dataset:
         i, j = data[key].num_generations() - 2, data[key].num_generations() - 1
         data[key].pairs.append((i, j))
         data[key].sft_index = 0
+        # generation with max score was set as chosen; one with min score was set as rejected
+        data[key].scores.extend([max(row['all_rm_scores']), min(row['all_rm_scores'])])
         data[key].dataset_name = data.name
         data[key].remove_extra_spaces()
 

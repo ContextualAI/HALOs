@@ -74,7 +74,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} ++n_examples=10_000 \
-    ++humanline=true ++epsilon_P=${L} ++epsilon_R=${U} ++humanline_iters=${ITERS} \
+    ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} \
     ++model.batch_size=32 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=32 ++model.max_grad_norm=${NORM}
 
 python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json

@@ -4,6 +4,10 @@ BETA=$1
 LR=$2
 TOTAL_PROMPTS=$3
 PROMPTS_PER_ROUND=$4
+L=$5
+U=$6
+NORM=$7
+ITERS=$8
 
 # Function to find an available port
 find_free_port() {
@@ -39,7 +43,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-kto-online-${BETA}-${LR}
+export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-kto-online-${BETA}-${LR}-${L}-${U}-${NORM}-${ITERS}-humanline
 
 if [ ! -d \$CACHE_DIR ]; then
     mkdir -p \$CACHE_DIR
@@ -50,7 +54,7 @@ CUMULATIVE_PROMPTS=0
 if [ \$CUMULATIVE_PROMPTS -eq 0 ]; then
     CURRENT_CKPT=\$MODEL_PATH
 else
-    CURRENT_CKPT=\${CACHE_DIR}/llama3-8B-instruct-kto-\${CUMULATIVE_PROMPTS}/FINAL
+    CURRENT_CKPT=\${CACHE_DIR}/llama3-8B-instruct-kto-10240/FINAL
 fi
 
 while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
@@ -83,7 +87,7 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
                 --main_process_ip \$MASTER_ADDR \
                 --main_process_port \$MASTER_PORT \
                 -m train.label \$SAMPLES_FILE \$DATA_FILE --reward_model_path RLHFlow/ArmoRM-Llama3-8B-v0.1 \
-                 --feedback_type pairwise --batch_size 16 --threshold 0.01
+                 --feedback_type pairwise --batch_size 16 --threshold 0.01 --feedback_mode max
 
             # # Label samples with API (must ssh into the login node for internet access)
             # ssh della-gpu \"source ~/.bashrc && \
@@ -109,7 +113,8 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
             train_datasets=[\$DATA_FILE] test_datasets=[ultrafeedback_armorm] ++lr=${LR} \
             ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG ++online=true \
-            ++model.batch_size=64 ++model.gradient_accumulation_steps=2 ++model.eval_batch_size=64 ++model.max_grad_norm=0.5
+            ++model.batch_size=64 ++model.gradient_accumulation_steps=2 ++model.eval_batch_size=64 \
+            ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} ++model.max_grad_norm=${NORM}
 
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 

@@ -9,8 +9,6 @@
 #SBATCH --partition=pli-c
 #SBATCH --output=%x_%j.out
 #SBATCH --error=%x_%j.err
-#SBATCH --exclude=della-j14g1
-#SBATCH --constraint=rh9|rh8
 
 BETA=$1
 LR=$2
@@ -71,9 +69,9 @@ accelerate launch \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
-    ++loss.beta=${BETA} \
-    ++humanline=false ++n_examples=10_000 \
-    ++model.batch_size=32 ++model.eval_batch_size=32
+    ++loss.beta=${BETA} ++loss.desirable_weight=1.1 \
+    ++humanline=false ++n_examples=20_000 \
+    ++model.batch_size=64 ++model.eval_batch_size=64
 
 # lm_eval --model hf \
 #   --model_args pretrained=\$CKPT,tokenizer=\$CKPT,parallelize=True \

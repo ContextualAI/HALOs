@@ -28,6 +28,7 @@ from tqdm import tqdm, trange
 from typing import List, Dict, Optional, Union
 import re
 import os
+import gc
 from .utils import StreamingJSONWriter, get_api_completion
 from .dataloader import SFTDataLoader
 from collections import defaultdict
@@ -311,6 +312,10 @@ async def main(args):
     if torch.distributed.is_initialized():
         torch.distributed.destroy_process_group()
 
+    torch.cuda.empty_cache()
+    accelerator.free_memory()
+    gc.collect()
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Label samples using either a reward model or API")
@@ -350,7 +355,7 @@ if __name__ == "__main__":
     parser.add_argument("--max_length", type=int, default=2048, help="Maximum sequence length for input")
     parser.add_argument("--max_prompt_length", type=int, default=1024, help="Maximum prompt length for input")
     parser.add_argument("--feedback_type", type=str, choices=['binary', 'pairwise', None], default=None, help="Type of feedback to generate")
-    parser.add_argument("--feedback_mode", type=str, choices=['random', 'max', 'min'], default='random', help="Mode for constructing pairwise feedback")
+    parser.add_argument("--feedback_mode", type=str, choices=['random', 'max', 'min'], default='max', help="Mode for constructing pairwise feedback")
     parser.add_argument("--threshold", type=str, default="median", help="How the reward threshold is calculated; this can also be a number (e.g., 0.5)")
     parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     parser.add_argument("--split", type=str, default=None, help="Split of data")

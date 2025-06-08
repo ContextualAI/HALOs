@@ -76,22 +76,20 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
         
         EXP_NAME=llama3-8B-instruct-kto-\${CUMULATIVE_PROMPTS}
 
-        if [ ! -f \$DATA_FILE ]; then
-            accelerate launch \
-                --config_file accelerate_config/fsdp_4gpu.yaml \
-                --machine_rank \$SLURM_PROCID \
-                --main_process_ip \$MASTER_ADDR \
-                --main_process_port \$MASTER_PORT \
-                -m train.label \$SAMPLES_FILE \$DATA_FILE --reward_model_path RLHFlow/ArmoRM-Llama3-8B-v0.1 \
-                 --feedback_type pairwise --batch_size 16 --threshold 0.01
+        accelerate launch \
+            --config_file accelerate_config/fsdp_4gpu.yaml \
+            --machine_rank \$SLURM_PROCID \
+            --main_process_ip \$MASTER_ADDR \
+            --main_process_port \$MASTER_PORT \
+            -m train.label \$SAMPLES_FILE \$DATA_FILE --reward_model_path RLHFlow/ArmoRM-Llama3-8B-v0.1 \
+                --feedback_type pairwise --batch_size 16 --threshold 0.01
 
-            # # Label samples with API (must ssh into the login node for internet access)
-            # ssh della-gpu \"source ~/.bashrc && \
-            #     conda activate halos && \
-            #     cd /home/ke7953/HALOs && \
-            #     accelerate launch -m train.label \$SAMPLES_FILE \$DATA_FILE \
-            #     --api_type openai --api_key \$OPENAI_API_KEY --feedback_type pairwise --batch_size 16 --threshold 0 \"
-        fi
+        # # Label samples with API (must ssh into the login node for internet access)
+        # ssh della-gpu \"source ~/.bashrc && \
+        #     conda activate halos && \
+        #     cd /home/ke7953/HALOs && \
+        #     accelerate launch -m train.label \$SAMPLES_FILE \$DATA_FILE \
+        #     --api_type openai --api_key \$OPENAI_API_KEY --feedback_type pairwise --batch_size 16 --threshold 0 \"
 
         if [ \$CUMULATIVE_PROMPTS -eq 0 ]; then
             MODEL_LOAD_ARG=\"++model.load_from=\$CURRENT_CKPT ++model.from_checkpoint=null \"

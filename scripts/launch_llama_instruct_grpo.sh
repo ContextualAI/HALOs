@@ -71,7 +71,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} ++loss.epsilon=${EPS} \
-    ++n_examples=10_000 ++model.batch_size=32 ++model.eval_batch_size=32 
+    ++n_examples=20_000 ++model.batch_size=64 ++model.eval_batch_size=64
 
 # lm_eval --model hf \
 #   --model_args pretrained=\$CKPT,tokenizer=\$CKPT,parallelize=True \

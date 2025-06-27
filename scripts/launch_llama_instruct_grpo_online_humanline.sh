@@ -114,8 +114,7 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
             ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG ++online=true \
             ++model.batch_size=64 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=64 \
-            ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} ++model.max_grad_norm=${NORM} \
-            ++config.seed=2
+            ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} ++model.max_grad_norm=${NORM}
 
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 

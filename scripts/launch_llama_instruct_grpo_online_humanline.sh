@@ -7,7 +7,6 @@ PROMPTS_PER_ROUND=$4
 L=$5
 U=$6
 NORM=$7
-ITERS=$8
 
 # Function to find an available port
 find_free_port() {
@@ -43,7 +42,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-grpo-online-${BETA}-${LR}-${L}-${U}-${NORM}-${ITERS}-humanline
+export CACHE_DIR=/scratch/gpfs/ke7953/models/llama-instruct-grpo-online-${BETA}-${LR}-${L}-${U}-${NORM}-humanline
 
 if [ ! -d \$CACHE_DIR ]; then
     mkdir -p \$CACHE_DIR
@@ -114,7 +113,7 @@ while [ \$CUMULATIVE_PROMPTS -lt ${TOTAL_PROMPTS} ]; do
             ++cache_dir=\$CACHE_DIR \
             ++model.name_or_path=\$MODEL_PATH \$MODEL_LOAD_ARG ++online=true \
             ++model.batch_size=64 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=64 \
-            ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} ++model.max_grad_norm=${NORM}
+            ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++model.max_grad_norm=${NORM}
 
         NEW_CKPT=\${CACHE_DIR}/\${EXP_NAME}/FINAL
 

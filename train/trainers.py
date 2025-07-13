@@ -344,30 +344,29 @@ class BasicTrainer(object):
             self.policy.train()
             start_time = time.time()
             
-            for i in range(self.config.humanline_iters if self.config.humanline else 1):
-                self.optimizer.zero_grad()
+            self.optimizer.zero_grad()
 
-                for batch_idx, batch in enumerate(accumulated_batches):  
-                    # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
-                    with contextlib.nullcontext() if batch_idx + 1 == len(accumulated_batches) else self.accelerator.no_sync(self.policy):
-                        batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                        loss, metrics = self.get_batch_metrics(batch)
-                        loss = loss / self.config.model.gradient_accumulation_steps
-                        self.accelerator.backward(loss)
-                        delete_dicts(batch)
-                    
-                        for k, v in metrics.items():
-                            batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
+            for batch_idx, batch in enumerate(accumulated_batches):  
+                # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
+                with contextlib.nullcontext() if batch_idx + 1 == len(accumulated_batches) else self.accelerator.no_sync(self.policy):
+                    batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    loss, metrics = self.get_batch_metrics(batch)
+                    loss = loss / self.config.model.gradient_accumulation_steps
+                    self.accelerator.backward(loss)
+                    delete_dicts(batch)
+                
+                    for k, v in metrics.items():
+                        batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
-                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
+            grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+            batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
-                if self.config.loss.sync_reference or self.config.humanline:
-                    self.sync_reference_with_policy()
-                    
-                self.optimizer.step()
-
+            if self.config.loss.sync_reference or self.config.humanline:
+                self.sync_reference_with_policy()
+                
+            self.optimizer.step()
             self.scheduler.step()
+            
             step_time = time.time() - start_time
             examples_per_second = self.config.model.batch_size / step_time
             batch_metrics['examples_per_second'].append(examples_per_second)
@@ -875,11 +874,6 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         This should be used to address imbalances in the ratio of desirable:undesirable examples respectively.
         The KL term is estimated by matching x with unrelated outputs y', then calculating the average log ratio
         log p_policy(y'|x) - log p_reference(y'|x).
-
-        If humanline alignment, do the following:
-        - for rejected examples, use a KL estimate of zero
-        - zero-shot rejection sampling (handled by get_sequence_rewards)
-        - adjust for entire chosen(rejected) sequences that have been sampled out by upweighting other chosen(rejected) examples
         """
         if policy_chosen_logps.shape[0] != 0:
             chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
@@ -1395,9 +1389,8 @@ class PPOTrainer(BasicTrainer):
                 continue
 
             start_time = time.time()
-            num_update_iters = self.config.humanline_iters if self.config.humanline else self.config.loss.ppo_epochs
 
-            for _ in range(num_update_iters):
+            for _ in range(self.config.loss.ppo_epochs):
                 self.optimizer.zero_grad()
            
                 for batch_idx, batch in enumerate(accumulated_batches):  

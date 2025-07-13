@@ -16,7 +16,6 @@ LR=$3
 L=$4
 U=$5
 NORM=$6
-ITERS=$7
 
 # Function to find an available port
 find_free_port() {
@@ -62,7 +61,7 @@ export -f init_env
 srun --jobid=$SLURM_JOB_ID --nodes=$SLURM_JOB_NUM_NODES --ntasks-per-node=1 bash -c "
 init_env
 export MODEL_PATH=meta-llama/Meta-Llama-3-8B-Instruct
-export EXP_NAME=llama3-8B-instruct-grpo-humanline-${BETA}-${EPS}-${LR}-${L}-${U}-${NORM}-${ITERS}-grpohumanline
+export EXP_NAME=llama3-8B-instruct-grpo-humanline-${BETA}-${EPS}-${LR}-${L}-${U}-${NORM}-grpohumanline
 export CKPT=/scratch/gpfs/ke7953/models/\$EXP_NAME/FINAL
 
 accelerate launch \
@@ -75,7 +74,7 @@ accelerate launch \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \
     ++loss.beta=${BETA} ++loss.epsilon=${EPS} ++n_examples=20_000 \
-    ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} ++humanline_iters=${ITERS} \
+    ++humanline=true ++log_epsilon_P=${L} ++log_epsilon_R=${U} \
     ++model.batch_size=64 ++model.gradient_accumulation_steps=1 ++model.eval_batch_size=64 ++model.max_grad_norm=${NORM}
 
 python -m train.sample \$CKPT --gpu_count 2 --output_file outputs/\$EXP_NAME.json

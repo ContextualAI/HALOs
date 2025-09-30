@@ -3,3 +3,5 @@
 trainer: SFTTrainer
 
 dataloader: SFTDataLoader
+
+sync_reference: false

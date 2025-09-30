@@ -36,7 +36,7 @@ from typing import Optional, Set
 from transformers import AutoModelForCausalLM, AutoTokenizer, set_seed
 from accelerate import Accelerator, DistributedDataParallelKwargs
 from peft import LoraConfig, TaskType, get_peft_model, PeftModel
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR, LambdaLR
 
 
 def main(config: DictConfig):
@@ -54,23 +54,23 @@ def main(config: DictConfig):
     ddp_kwargs = DistributedDataParallelKwargs(find_unused_parameters=True)
     accelerator = Accelerator(
         project_dir=config.local_run_dir,
-        gradient_accumulation_steps=config.model.gradient_accumulation_steps,
-        kwargs_handlers=[ddp_kwargs]
+        kwargs_handlers=[ddp_kwargs],
+        step_scheduler_with_optimizer=config.step_scheduler_with_optimizer,
     )
 
     if accelerator.state.fsdp_plugin is not None:
         accelerator.state.fsdp_plugin.transformer_layer_cls_to_wrap = config.model.block_name
 
     # Calculate microbatch sizes
-    if config.model.batch_size % accelerator.num_processes == 0:
-        config.model.microbatch_size = config.model.batch_size / accelerator.num_processes
+    if config.model.batch_size % (accelerator.num_processes * config.model.gradient_accumulation_steps) == 0:
+        config.model.microbatch_size = config.model.batch_size / (accelerator.num_processes * config.model.gradient_accumulation_steps)
     else:
-        raise ValueError(f"{config.model.batch_size} needs to be divisible by the number of processes")
+        raise ValueError(f"{config.model.batch_size} needs to be divisible by the number of processes * gradient_accumulation_steps")
 
-    if config.model.eval_batch_size % accelerator.num_processes == 0:
-        config.model.eval_microbatch_size = config.model.eval_batch_size / accelerator.num_processes
+    if config.model.eval_batch_size % (accelerator.num_processes * config.model.gradient_accumulation_steps) == 0:
+        config.model.eval_microbatch_size = config.model.eval_batch_size / (accelerator.num_processes * config.model.gradient_accumulation_steps)
     else:
-        raise ValueError(f"{config.model.eval_batch_size} needs to be divisible by the number of processes")
+        raise ValueError(f"{config.model.eval_batch_size} needs to be divisible by the number of processes * gradient_accumulation_steps")
 
     if config.eval_every % config.model.batch_size != 0:
         accelerator.print('WARNING: eval_every must be divisible by batch_size')
@@ -116,10 +116,20 @@ def main(config: DictConfig):
 
         accelerator.print("Default chat template set.")
 
+    for token in config.get("template_tokens"):
+        if token not in tokenizer.vocab:
+            special_tokens.append(token)
+
     control_tokens = list(config.loss.get("control_tokens", {}).values())
     special_tokens.extend(control_tokens)
 
     num_tokens_added = tokenizer.add_special_tokens({"additional_special_tokens": special_tokens})
+
+    # only skip examples if loading from checkpoint
+    if config.model.from_checkpoint and not config.online:
+        num_skip = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json'))).get('counter', 0)
+    else:
+        num_skip = 0
 
     # Create data loaders
     accelerator.print(f'Loading data')
@@ -135,19 +145,22 @@ def main(config: DictConfig):
         control_tokens=config.loss.get("control_tokens", {}),
     )
     train_iterator = data_loader_class(
-        config.datasets, 
+        config.train_datasets, 
         tokenizer,
         split='train',
         microbatch_size=config.model.microbatch_size,
+        global_batch_size=config.model.batch_size,
         n_epochs=config.n_epochs,
         n_examples=config.n_examples,
+        num_skip=num_skip,
         **data_iterator_kwargs
     )
     eval_iterator = data_loader_class(
-        config.datasets, 
+        config.test_datasets, 
         tokenizer,
         split='test',
         microbatch_size=config.model.eval_microbatch_size,
+        global_batch_size=config.model.batch_size,
         n_examples=config.n_eval_examples, 
         n_epochs=(1 if config.n_eval_examples is None else None),
         **data_iterator_kwargs
@@ -248,24 +261,33 @@ def main(config: DictConfig):
 
     # Loading optimizer, scheduler
     accelerator.print("Creating optimizer and scheduler")
-    optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr)
+    optimizer = getattr(torch.optim, config.optimizer)(policy.parameters(), lr=config.lr, weight_decay=config.weight_decay, betas=(config.beta1, config.beta2))
+    
+    # For DPOTrainer, prepare policy and optimizer across all GPUs to avoid OOM on master node
+    if config.loss.trainer == "DPOTrainer":
+        # Distribute model, optimizer, and scheduler across GPUs
+        accelerator.print("Preparing DPOTrainer components across GPUs")
+        policy, optimizer = accelerator.prepare(policy, optimizer)
 
-    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=config.warmup_steps)
-    main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - config.warmup_steps, eta_min=0)
-    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[config.warmup_steps])
+    warmup_steps = train_iterator.num_training_steps * config.warmup
+    warmup_scheduler = LinearLR(optimizer, start_factor=0.1, end_factor=1.0, total_iters=warmup_steps)
 
+    if config.loss.dataloader == "SFTDataLoader":
+        main_scheduler = CosineAnnealingLR(optimizer, T_max=train_iterator.num_training_steps - warmup_steps, eta_min=0)
+    else:
+        main_scheduler = LambdaLR(optimizer, lr_lambda=lambda step: 1.0)
+    
+    accelerator.print(f"Total training steps: {train_iterator.num_training_steps}")
+    scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, main_scheduler], milestones=[warmup_steps])
+    
     if config.model.from_checkpoint:
         optimizer_state = optimizer.state_dict()
-        optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt"), map_location='cpu'))
+        optimizer_state.update(torch.load(os.path.join(config.model.from_checkpoint, "optimizer.pt")))
         optimizer.load_state_dict(optimizer_state)
 
         scheduler_state = torch.load(os.path.join(config.model.from_checkpoint, "scheduler.pt"))
         scheduler.load_state_dict(scheduler_state)
-
-        metrics = json.load(open(os.path.join(config.model.from_checkpoint, 'metrics.json')))
-        num_skip_batches = int(metrics.get('counter', 0) / config.model.batch_size)
-    else:
-        num_skip_batches = 0
+        del optimizer_state, scheduler_state
 
     # Load explicit reward model if necessary (e.g., for PPO)
     if config.model.reward_model.path:
@@ -294,7 +316,6 @@ def main(config: DictConfig):
         scheduler,
         policy, 
         reference_model=reference_model,
-        num_skip_batches=num_skip_batches,
         reward_model=reward_model,
         reward_tokenizer=reward_tokenizer,
     )

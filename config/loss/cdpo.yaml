@@ -9,3 +9,5 @@ epsilon: 0.2
 trainer: CDPOTrainer
 
 dataloader: PairedPreferenceDataLoader
+
+sync_reference: false

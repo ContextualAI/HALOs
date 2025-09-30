@@ -22,21 +22,21 @@ policy_dtype: bfloat16
 reference_dtype: bfloat16
 
 # the maximum gradient norm to clip to
-max_grad_norm: 5.0
+max_grad_norm: 1.0
 
 # gradient norm for clipping gradient of value head (for PPO)
 v_head_max_grad_norm: 0.10
 
 # the maximum allowed length for an input (prompt + response) (usually has to be smaller than what the model supports)
-max_length: 1024
+max_length: 1250
 
 # the maximum allowed length for a prompt (remainder will be dedicated to the completion)
-max_prompt_length: 512
+max_prompt_length: 625
 
 # activation checkpointing (not supported for all models; may need to be overwritten)
 activation_checkpointing: true
 
-# the per-step batch size (across all machines); divide by number of devices to get microbatch size (done in launch.py)
+# the per-step batch size (across all machines and gradient accumulation steps)
 batch_size: 32
 microbatch_size: null
 

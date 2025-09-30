@@ -417,7 +417,7 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
 
         if os.path.exists(os.path.join(load_from, "v_head.pt")):
             state_dict = torch.load(os.path.join(load_from, "v_head.pt"), map_location='cpu')
-            model_with_value_head.v_head.load_state_dict(state_dict['state'])
+            model_with_value_head.v_head.load_state_dict(state_dict)
 
         return model_with_value_head
 

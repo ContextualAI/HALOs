@@ -21,15 +21,16 @@ import torch
 torch.backends.cuda.matmul.allow_tf32 = True
 import torch.nn.functional as F
 import torch.nn as nn
-import transformers
+import contextlib
 import gc
 from .models import AutoModelForCausalLM, AutoModelForCausalLMWithValueHead, AutoModelForBradleyTerry
 from omegaconf import OmegaConf, DictConfig
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer, GenerationConfig
 from accelerate import Accelerator
 
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 import torch.distributed as dist
+
 
 from . import dataloader
 from .utils import (
@@ -51,8 +52,8 @@ import os
 from collections import defaultdict
 import time
 import json
-import functools
 from typing import Optional, Dict, List, Union, Tuple
+from contextlib import nullcontext
 
 
 class BasicTrainer(object):
@@ -70,7 +71,6 @@ class BasicTrainer(object):
                  scheduler: torch.optim.lr_scheduler.LRScheduler,
                  policy: nn.Module, 
                  reference_model: Optional[nn.Module] = None,
-                 num_skip_batches=0,
                  **kwargs):
         """A trainer for a language model, supporting either SFT, HALO, or offline PPO training."""
         self.seed = config.seed
@@ -89,13 +89,12 @@ class BasicTrainer(object):
 
         self.policy = policy
         self.policy_dtype = getattr(torch, config.model.policy_dtype)
-
+        
         self.reference_model = reference_model
         self.train_iterator = train_iterator
         self.eval_iterator = eval_iterator
         self.optimizer = optimizer
         self.scheduler = scheduler
-        self.num_skip_batches = num_skip_batches # when loading from checkpoint
 
         self.reward_model = kwargs.get('reward_model', None)
         self.reward_tokenizer = kwargs.get('reward_tokenizer', None)
@@ -110,8 +109,8 @@ class BasicTrainer(object):
         self.policy, self.reference_model, self.optimizer, self.scheduler = self.accelerator.prepare(
             self.policy,
             self.reference_model,
-            self.optimizer, 
-            self.scheduler
+            self.optimizer,
+            self.scheduler,
         )
 
         if self.reward_model:
@@ -133,24 +132,60 @@ class BasicTrainer(object):
         per_token_logps = torch.gather(distribution_logps, dim=2, index=labels.unsqueeze(2)).squeeze(2)
 
         return per_token_logps * loss_mask
-        
-    def get_batch_samples(self, batch: Dict[str, torch.LongTensor]) -> Tuple[str, str]:
-        """Generate samples from the policy."""
-        with self.accelerator.autocast():
-            policy_output = self.policy.generate(
-                batch['prompt_input_ids'],
-                attention_mask=batch['prompt_attention_mask'],
-                max_length=self.config.model.max_length,
-                do_sample=True,
-                pad_token_id=self.tokenizer.pad_token_id,
-                top_p=self.config.top_p,
-            )
-        
-        policy_output = pad_to_length(policy_output, self.config.model.max_length, self.tokenizer.pad_token_id)
-        policy_output = self.accelerator.gather(policy_output)
-        policy_output_decoded = self.tokenizer.batch_decode(policy_output, skip_special_tokens=True)
+    
+    def get_ratios(self, policy_logps, reference_logps):
+        """
+        Return the probability ratio under the policy vs the reference [policy(y|x)/reference(y|x)].
+        Apply humanline if specified.
 
-        return policy_output_decoded
+        Args:
+            policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
+            reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
+
+        Returns:
+            The probability ratios (microbatch_size, sequence length) if sequence_level; otherwise, (microbatch_size, 1)
+            The ratio of tokens that are unclamped by humanline.
+        """
+        if self.config.humanline:
+            logratio = (policy_logps - reference_logps).clamp(self.config.log_epsilon_P, self.config.log_epsilon_R)
+
+            detached = (policy_logps - reference_logps).detach()
+            unclamped = (self.config.log_epsilon_P < detached) & (detached < self.config.log_epsilon_R)
+            unclamped = ((unclamped & (detached != 0)).float().sum() / (detached != 0).float().sum().clamp(min=1)).clamp(max=1, min=0)
+        else:
+            logratio = policy_logps - reference_logps
+            unclamped = torch.Tensor([1]).to(self.policy_dtype).to(self.accelerator.device)
+
+        ratio = logratio.exp()
+
+        return ratio, unclamped
+
+    def get_sequence_rewards(self, policy_logps, reference_logps, length_normalized=False):
+        """
+        If regular alignment, return the HALO-defined reward for the sequence (log [policy(y|x)/reference(y|x)]).
+        
+        Args:
+            policy_logps: token-level probabilities according to policy (microbatch_size, maximum sequence length)
+            reference_logps: token-level probabilities according to reference model (microbatch_size, maximum sequence length)
+            length_normalized: divide the sequence reward by the number of non-rejected tokens
+
+        Returns:
+            The sequence-level rewards (microbatch_size, 1).
+        """
+        if self.config.humanline:
+            token_rewards = (policy_logps - reference_logps).clamp(self.config.log_epsilon_P, self.config.log_epsilon_R)
+
+            logratio = (policy_logps - reference_logps).detach()
+            unclamped = (self.config.log_epsilon_P < logratio) & (logratio < self.config.log_epsilon_R)
+            unclamped = ((unclamped & (logratio != 0)).float().sum() / (logratio != 0).float().sum().clamp(min=1)).clamp(max=1, min=0)
+        else:
+            token_rewards = policy_logps - reference_logps
+            unclamped = torch.Tensor([1]).to(self.policy_dtype).to(self.accelerator.device)
+        
+        normalization_factor = (token_rewards.abs() != 0).float().sum(-1) if length_normalized else 1
+        sequence_rewards = token_rewards.sum(-1) / normalization_factor
+
+        return sequence_rewards, unclamped
 
     def loss(self,
              batch: Dict,
@@ -186,11 +221,49 @@ class BasicTrainer(object):
         """
         raise NotImplementedError
 
+    def get_reward_scores(self, batch: Dict[str, torch.LongTensor]) -> torch.FloatTensor:
+        """Get reward scores from reward model.
+        
+        Args:
+            batch: Dictionary containing batch data
+            
+        Returns:
+            torch.FloatTensor of shape (microbatch_size,) containing reward scores
+        """
+        if 'score' in batch:
+            print(f"Using score from batch: {batch['score']}")
+            reward_scores = batch['score']
+        elif self.reward_model is not None:
+            # Decode the sequences using policy tokenizer
+            sequences = self.tokenizer.batch_decode(batch['target_combined_input_ids'], skip_special_tokens=True)
+            # Encode with reward model tokenizer
+            reward_inputs = self.reward_tokenizer(
+                sequences,
+                padding=True,
+                truncation=True,
+                return_tensors='pt',
+                max_length=self.config.model.max_length
+            ).to(self.accelerator.device)
+
+            with torch.no_grad():
+                # Get reward model scores
+                outputs = self.reward_model(reward_inputs['input_ids'], attention_mask=reward_inputs['attention_mask'])
+                # Use the positive class logit as the reward score
+                if self.config.model.reward_model_path == "RLHFlow/ArmoRM-Llama3-8B-v0.1":
+                    reward_scores = outputs.score.cpu().float()
+                else:
+                    reward_scores = outputs.logits[:, 1]
+        else:
+            # Use binary labels (1 for chosen, -1 for rejected)
+            reward_scores = torch.tensor([(1 if batch['status'][i] == 'chosen' else -1) for i in range(len(batch['status']))])
+
+        return reward_scores
+
     def eval(self) -> Dict[str, Dict]:
         """
         Run evaluation on all the examples in the test data and return the metrics from get_batch_metrics.
         This is close-ended evaluation and measures the performance of a single model on a single dataset. 
-        It does not compare two models to eacch other.
+        It does not compare two models to each other.
 
         Returns:
             A dict of form:
@@ -238,23 +311,18 @@ class BasicTrainer(object):
 
     def train(self):
         """Begin either SFT or HALO training, with periodic evaluation. This is subclassed when implementing PPO."""
-
         self.accelerator.print(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
-        
+
         if self.reference_model is not None:
             self.reference_model.eval()
 
         last_log = None
         batch_metrics = defaultdict(list)
+        accumulated_batches = []
 
-        for batch in self.train_iterator:
-            if self.batch_counter < self.num_skip_batches:
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
-                continue
-
+        for train_batch in self.train_iterator:
             # EVALUATION
-            if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
+            if accumulated_batches == [] and ((self.example_counter % self.config.eval_every == 0) or (self.example_counter == 0 and self.config.do_first_eval)):
                 results = self.eval()
 
                 if self.example_counter > 0:
@@ -266,28 +334,39 @@ class BasicTrainer(object):
                         self.save(output_dir, results['results'], final_save=False)
 
                 self.accelerator.print(results['results'])
-                delete_dicts(results)
-
+                delete_dicts(results) 
+            
             # TRAINING
+            accumulated_batches.append(train_batch)
+            if len(accumulated_batches) < self.config.model.gradient_accumulation_steps:
+                continue
+
             self.policy.train()
-            accumulated = 0
             start_time = time.time()
             
-            with self.accelerator.accumulate(self.policy):
-                batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-                loss, metrics = self.get_batch_metrics(batch)
-                self.accelerator.backward(loss)
+            self.optimizer.zero_grad()
 
-                for k, v in metrics.items():
-                    batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
+            for batch_idx, batch in enumerate(accumulated_batches):  
+                # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
+                with contextlib.nullcontext() if batch_idx + 1 == len(accumulated_batches) else self.accelerator.no_sync(self.policy):
+                    batch = {k: v.to(self.accelerator.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+                    loss, metrics = self.get_batch_metrics(batch)
+                    loss = loss / self.config.model.gradient_accumulation_steps
+                    self.accelerator.backward(loss)
+                    delete_dicts(batch)
+                
+                    for k, v in metrics.items():
+                        batch_metrics[k].extend(torch.as_tensor(v).reshape(-1).float().cpu().numpy().tolist())
 
-                grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
-                batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
-                self.optimizer.step()
-                self.scheduler.step()
-                self.optimizer.zero_grad()
-                accumulated += 1
+            grad_norm = self.accelerator.clip_grad_norm_(self.policy.parameters(), self.config.model.max_grad_norm)
+            batch_metrics['grad_norm'].extend(torch.as_tensor(grad_norm).reshape(-1).float().cpu().numpy().tolist())
 
+            if self.config.loss.sync_reference or self.config.humanline:
+                self.sync_reference_with_policy()
+                
+            self.optimizer.step()
+            self.scheduler.step()
+            
             step_time = time.time() - start_time
             examples_per_second = self.config.model.batch_size / step_time
             batch_metrics['examples_per_second'].append(examples_per_second)
@@ -303,7 +382,8 @@ class BasicTrainer(object):
 
                 mean_train_metrics['counters/examples'] = self.example_counter
                 mean_train_metrics['counters/updates'] = self.batch_counter
-                self.accelerator.print(f'train stats after {self.example_counter} examples: {formatted_dict(mean_train_metrics)}')
+                mean_train_metrics['counters/lr'] = self.scheduler.get_last_lr()[0]
+                self.accelerator.print(f'train stats after {self.batch_counter} steps: {formatted_dict(mean_train_metrics)}')
 
                 if self.config.wandb.enabled and self.accelerator.is_main_process:
                     wandb.log(mean_train_metrics, step=self.example_counter)
@@ -313,11 +393,9 @@ class BasicTrainer(object):
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
 
-            delete_dicts(batch, metrics, batch_metrics, mean_train_metrics)
-
-            if accumulated >= self.config.model.gradient_accumulation_steps:
-                self.free_memory()
-                accumulated = 0
+            delete_dicts(metrics, batch_metrics, mean_train_metrics)
+            accumulated_batches = []
+            self.free_memory()
 
     def save(self, output_dir: Optional[str] = None, metrics: Optional[Dict] = {}, final_save=True):
         """Save tokenizer, policy model, optimizer, scheduler state to disk."""
@@ -357,6 +435,7 @@ class BasicTrainer(object):
             )
             unwrapped_model = self.accelerator.unwrap_model(self.policy).base_model
         else:
+            # by default, get_state_dict unwraps model before getting the state_dict
             state_dict = self.accelerator.get_state_dict(self.policy)
             unwrapped_model = self.accelerator.unwrap_model(self.policy)
 
@@ -369,6 +448,100 @@ class BasicTrainer(object):
         )
             
         self.accelerator.wait_for_everyone()
+
+    def sync_reference_with_policy(self):
+        """
+        Update the reference model to have the policy weights.
+        """
+        state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
+        self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
+        self.accelerator.wait_for_everyone()
+
+    def sample(self, model, batch: Dict[str, Union[List, torch.LongTensor]], temp: float=0.7) -> str:
+        """
+        Sample from the given model. NOTE: If the policy is being trained with FSDP, then sampling from it 
+        directly will produce gibberish. If you want to sample from the policy, you should sync the reference 
+        model with the policy via sync_reference_with_policy, then sample from reference model. If you are 
+        inserting this back into the dataloader, remember that the generation should be in the format 
+        { "role": "assistant", "content": x }.
+        
+        Args:
+            model: the model to sample from (the reference model in most cases)
+            batch: the sample batch returned from a data loader
+            temp: temperature for sampling
+        Returns:
+            Completion for the prompt.
+        """
+        generation_config = GenerationConfig(
+            max_new_tokens=(self.config.model.max_length - self.config.model.max_prompt_length),
+            do_sample=True,
+            temperature=temp,
+            num_return_sequences=1,
+            pad_token_id=self.tokenizer.pad_token_id,
+        )
+        
+        batch_elements = []
+
+        for prompt in batch['prompt_text']:
+            batch_element = self.train_iterator.tokenize_batch_element(
+                [{"role": "user", "content" : prompt}], 
+                [{"role": "assistant", "content": ""}], 
+            )
+            batch_elements.append(batch_element)
+
+        model.eval()
+
+        if self.accelerator.state.fsdp_plugin is not None:
+            context = FSDP.summon_full_params(model)
+        else:
+            context = nullcontext
+
+        with context:
+            with torch.no_grad():
+                batch_elements = self.train_iterator.collate(batch_elements)
+                batch_completion_ids = model.generate(
+                    batch_elements['prompt_input_ids'].to(self.accelerator.device), 
+                    attention_mask=batch_elements['prompt_attention_mask'].to(self.accelerator.device),
+                    generation_config=generation_config
+                )
+                # truncate prompt
+                batch_completion_ids = [ x[len(batch_elements['prompt_input_ids'][i]):] for i,x in enumerate(batch_completion_ids) ]
+                batch_completions = self.tokenizer.batch_decode(batch_completion_ids, skip_special_tokens=True)
+        
+        return batch_completions
+
+    def update_batch(self, batch: Dict[str, Union[List, torch.LongTensor]], completions: List[str]) -> Dict[str, Union[List, torch.LongTensor]]:
+        
+        """
+        Args:
+            batch: the original offline batch
+            completions: the online generations from the updated reference model (after syncing weights with policy model)
+            
+        Returns:
+            updated_batch: the updated online batch
+        """
+        updated_batch = []
+        for i, prompt in enumerate(batch['prompt']):
+            batch_element = self.train_iterator.tokenize_batch_element(
+                prompt, 
+                [{"role": "assistant", "content": completions[i]}], 
+                prefix='target'
+            )
+            for k in ['status', 'conversation', 'generation']:
+                batch_element[k] = batch[k][i]
+            updated_batch.append(batch_element)
+        
+        for i in range(len(updated_batch)):
+            updated_batch[i].update(self.train_iterator.tokenize_batch_element(
+                updated_batch[i]['prompt'], 
+                [{"role": "assistant", "content": completions[i]}], 
+                prefix='KL'
+            ))
+        
+        updated_batch = self.train_iterator.collate(updated_batch)
+        delete_dicts(batch)
+        
+        return updated_batch
 
     def free_memory(self):
         torch.cuda.empty_cache()
@@ -396,17 +569,16 @@ class SFTTrainer(BasicTrainer):
             ).logits.to(self.policy_dtype)
             
             policy_chosen_logps = self.get_batch_logps(policy_chosen_logits, batch['target_labels'])
-            policy_chosen_logps = policy_chosen_logps.view(-1)
-            losses = -policy_chosen_logps
+            token_mask = (policy_chosen_logps != 0).float().detach()
+
+        # Normalize the loss by the number of tokens before returning for backpropagation
+        normalized_loss = -policy_chosen_logps / token_mask.sum()
 
         # Gather losses and logps from all processes
-        total_nonzero_elements = self.accelerator.gather((policy_chosen_logps != 0).sum().detach()).sum()
-        metrics[f'logps_{mode}/chosen'] = self.accelerator.gather(policy_chosen_logps.detach()).sum() / total_nonzero_elements
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.sum().detach()).sum() / total_nonzero_elements
+        metrics[f'logps/{mode}'] = self.accelerator.gather((policy_chosen_logps * token_mask).detach().sum() / token_mask.sum())
+        metrics[f'loss/{mode}'] = self.accelerator.gather(normalized_loss.detach())
 
-        del policy_chosen_logits, policy_chosen_logps
-
-        return losses.sum(), metrics
+        return normalized_loss.sum(), metrics
 
 
 class UnpairedPreferenceTrainer(BasicTrainer):
@@ -446,12 +618,12 @@ class UnpairedPreferenceTrainer(BasicTrainer):
 
         if self.reference_model is None:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
-            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps)
+            losses, chosen_rewards, rejected_rewards, chosen_unclamped, rejected_unclamped = self.loss(batch, policy_chosen_logps, policy_rejected_logps)
         else:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
             with torch.no_grad():
                 reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
-            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
+            losses, chosen_rewards, rejected_rewards, chosen_unclamped, rejected_unclamped = self.loss(batch, policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
         # all_gather treats empty lists/tensors poorly, and empty lists can occur because a batch can contain all chosen or all rejected example
         # therefore, concatenate chosen + rejected rewards before all_gather
@@ -465,6 +637,8 @@ class UnpairedPreferenceTrainer(BasicTrainer):
 
         metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
         metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
+        metrics[f'rewards_{mode}/chosen_unclamped'] = self.accelerator.gather(chosen_unclamped)
+        metrics[f'rewards_{mode}/rejected_unclamped'] = self.accelerator.gather(rejected_unclamped)
         metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
 
@@ -474,7 +648,7 @@ class UnpairedPreferenceTrainer(BasicTrainer):
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
 class PairedPreferenceTrainer(BasicTrainer):
@@ -542,18 +716,20 @@ class PairedPreferenceTrainer(BasicTrainer):
 
         if self.reference_model is None:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
-            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps)
+            losses, chosen_rewards, rejected_rewards, chosen_unclamped, rejected_unclamped = self.loss(batch, policy_chosen_logps, policy_rejected_logps)
         else:
             policy_chosen_logps, policy_rejected_logps = self.forward(self.policy, batch)
             with torch.no_grad():
                 reference_chosen_logps, reference_rejected_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
-            losses, chosen_rewards, rejected_rewards = self.loss(batch, policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
+            losses, chosen_rewards, rejected_rewards, chosen_unclamped, rejected_unclamped = self.loss(batch, policy_chosen_logps, policy_rejected_logps, reference_chosen_logps, reference_rejected_logps)
 
         # accuracy calculated on paired examples (for apples-to-apples comparison with UnpairedPreferenceTrainer)
         reward_accuracies = (chosen_rewards > rejected_rewards).float()
 
         metrics[f'rewards_{mode}/chosen'] = self.accelerator.gather(chosen_rewards.detach())
         metrics[f'rewards_{mode}/rejected'] = self.accelerator.gather(rejected_rewards.detach())
+        metrics[f'rewards_{mode}/chosen_unclamped'] = self.accelerator.gather(chosen_unclamped)
+        metrics[f'rewards_{mode}/rejected_unclamped'] = self.accelerator.gather(rejected_unclamped)
         metrics[f'rewards_{mode}/accuracies'] = self.accelerator.gather(reward_accuracies.detach())
         metrics[f'rewards_{mode}/margins'] = self.accelerator.gather((chosen_rewards - rejected_rewards).detach())
         metrics[f'logps_{mode}/rejected'] = self.accelerator.gather(policy_rejected_logps.detach())
@@ -564,7 +740,7 @@ class PairedPreferenceTrainer(BasicTrainer):
         if self.reference_model:
             del reference_chosen_logps, reference_rejected_logps
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
 class DPOTrainer(PairedPreferenceTrainer):
@@ -577,12 +753,15 @@ class DPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the DPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-        rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
+        chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+        rejected_rewards, rejected_unclamped = self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps)
+
+        chosen_rewards *= self.config.loss.beta
+        rejected_rewards *= self.config.loss.beta
 
         losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
 
-        return losses, chosen_rewards.detach(), rejected_rewards.detach()
+        return losses, chosen_rewards.detach(), rejected_rewards.detach(), chosen_unclamped, rejected_unclamped
 
 
 class CDPOTrainer(PairedPreferenceTrainer):
@@ -595,14 +774,17 @@ class CDPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the CDPO loss for a batch of policy and reference model token-level log probabilities."""
-        chosen_rewards = self.config.loss.beta * (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-        rejected_rewards = self.config.loss.beta * (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-        
+        chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+        rejected_rewards, rejected_unclamped = self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps)
+
+        chosen_rewards *= self.config.loss.beta
+        rejected_rewards *= self.config.loss.beta
+
         forward_losses = -F.logsigmoid(chosen_rewards - rejected_rewards)
         reverse_losses = -F.logsigmoid(rejected_rewards - chosen_rewards)
         losses = (1 - self.config.loss.epsilon) * forward_losses + self.config.loss.epsilon * reverse_losses
 
-        return losses, chosen_rewards.detach(), rejected_rewards.detach()
+        return losses, chosen_rewards.detach(), rejected_rewards.detach(), chosen_unclamped, rejected_unclamped
 
 
 class IPOTrainer(PairedPreferenceTrainer):
@@ -615,26 +797,12 @@ class IPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the IPO loss for a batch of policy and reference model token-level log probabilities."""
-        prompt_lengths = (batch['prompt_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-
-        chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
-
-        rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
-
-        # must average over the probabilities
-        policy_chosen_logps = policy_chosen_logps.sum(-1) / chosen_lengths
-        policy_rejected_logps = policy_rejected_logps.sum(-1) / rejected_lengths
-        reference_chosen_logps = reference_chosen_logps.sum(-1) / chosen_lengths
-        reference_rejected_logps = reference_rejected_logps.sum(-1) / rejected_lengths
-
-        chosen_rewards = policy_chosen_logps - reference_chosen_logps
-        rejected_rewards = policy_rejected_logps - reference_rejected_logps
+        chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps, length_normalized=True)
+        rejected_rewards, rejected_unclamped = self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps, length_normalized=True)
         
         losses = (chosen_rewards - rejected_rewards - (1/(2 * self.config.loss.tau))).pow(2)
 
-        return losses, chosen_rewards.detach(), rejected_rewards.detach()
+        return losses, chosen_rewards.detach(), rejected_rewards.detach(), chosen_unclamped, rejected_unclamped
     
 
 class SimPOTrainer(PairedPreferenceTrainer):
@@ -645,19 +813,12 @@ class SimPOTrainer(PairedPreferenceTrainer):
         *args,
         ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Compute the SimPO loss for a batch of policy and reference model token-level log probabilities."""
-        prompt_lengths = (batch['prompt_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-
-        chosen_combined_lengths = (batch['chosen_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        chosen_lengths = (chosen_combined_lengths - prompt_lengths).clamp(min=1)
-        chosen_rewards = policy_chosen_logps.sum(-1) / chosen_lengths
-
-        rejected_combined_lengths = (batch['rejected_combined_input_ids'] != self.tokenizer.pad_token_id).sum(-1).clamp(min=1)
-        rejected_lengths = (rejected_combined_lengths - prompt_lengths).clamp(min=1)
-        rejected_rewards = policy_rejected_logps.sum(-1) / rejected_lengths
-        
+        # implicit reference model that assigns probability 1 (logp = 0) to all tokens
+        chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, torch.zeros_like(policy_chosen_logps).to(self.accelerator.device), length_normalized=True)
+        rejected_rewards, rejected_unclamped = self.get_sequence_rewards(policy_rejected_logps, torch.zeros_like(policy_rejected_logps).to(self.accelerator.device), length_normalized=True)
         losses = -F.logsigmoid(self.config.loss.beta * (chosen_rewards - rejected_rewards - self.config.loss.gamma_beta_ratio))
 
-        return losses, chosen_rewards.detach(), rejected_rewards.detach()
+        return losses, chosen_rewards.detach(), rejected_rewards.detach(), chosen_unclamped, rejected_unclamped
 
 
 class SLiCTrainer(PairedPreferenceTrainer):
@@ -675,15 +836,16 @@ class SLiCTrainer(PairedPreferenceTrainer):
             L(x, y) := max(0, beta - log p_policy(y_chosen|x) + log p_rejected(y|x))
         For the cross-entropy loss, just use the NLL of the chosen sequence (equivalent to SFT).
         """
-        cal_loss = torch.clamp(self.config.loss.beta - policy_chosen_logps.sum(-1) + policy_rejected_logps.sum(-1), min=0)
+        # implicit reference model that assigns probability 1 (logp = 0) to all tokens, as in SimPO
+        chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, torch.zeros_like(policy_chosen_logps).to(self.accelerator.device))
+        rejected_rewards, rejected_unclamped = self.get_sequence_rewards(policy_rejected_logps, torch.zeros_like(policy_rejected_logps).to(self.accelerator.device))
+        
+        cal_loss = torch.clamp(self.config.loss.beta - chosen_rewards + rejected_rewards, min=0)
         reg_loss = -policy_chosen_logps
 
         losses = cal_loss + self.config.loss.lambda_coef * reg_loss
 
-        chosen_rewards = policy_chosen_logps.detach()
-        rejected_rewards = policy_rejected_logps.detach()
-
-        return losses, chosen_rewards, rejected_rewards
+        return losses, chosen_rewards.detach(), rejected_rewards.detach(), chosen_unclamped, rejected_unclamped
 
 
 class KTOTrainer(UnpairedPreferenceTrainer):
@@ -710,35 +872,49 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         The desirable losses are weighed by config.loss.desirable_weight.
         The undesirable losses are weighed by config.loss.undesirable_weight.
         This should be used to address imbalances in the ratio of desirable:undesirable examples respectively.
-
         The KL term is estimated by matching x with unrelated outputs y', then calculating the average log ratio
-        log p_policy(y'|x) - log p_reference(y'|x). Doing so avoids the requirement that there be equal numbers of 
-        desirable and undesirable examples in the microbatch. It can be estimated differently: the 'z1' estimate
-        takes the mean reward clamped to be non-negative; the 'z2' estimate takes the mean over rewards when y|x
-        is more probable under the policy than the reference.
+        log p_policy(y'|x) - log p_reference(y'|x).
         """
-        KL_rewards = (policy_KL_logps.sum(-1) - reference_KL_logps.sum(-1))
-        KL = self.accelerator.gather(KL_rewards.detach()).mean().clamp(min=0)
-
         if policy_chosen_logps.shape[0] != 0:
-            chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
+            chosen_rewards, chosen_unclamped = self.get_sequence_rewards(policy_chosen_logps, reference_chosen_logps)
+        else:
+            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
+            chosen_unclamped = torch.Tensor([1]).to(self.policy_dtype).to(self.accelerator.device)
+
+        if policy_rejected_logps.shape[0] != 0:
+            rejected_rewards, rejected_unclamped = self.get_sequence_rewards(policy_rejected_logps, reference_rejected_logps)
+        else:
+            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
+            rejected_unclamped = torch.Tensor([1]).to(self.policy_dtype).to(self.accelerator.device)
+
+        KL_rewards, _ = self.get_sequence_rewards(policy_KL_logps.detach(), reference_KL_logps.detach())
+
+        stats = self.accelerator.reduce(torch.Tensor([
+            (chosen_rewards.abs() != 0).float().sum().item(),   # non-empty sequences after rejection sampling
+            len(chosen_rewards),                                
+            (rejected_rewards.abs() != 0).float().sum().item(), # non-empty sequences after rejection sampling
+            len(rejected_rewards),
+            KL_rewards.sum(),                                   # sum of non-empty KL examples
+            (KL_rewards.abs() != 0).float().sum().item(),       # number of non-empty KL examples
+        ]).to(self.accelerator.device), reduction="sum")
+
+        KL = (stats[4] / stats[5].clamp(min=1)).clamp(min=0)
+        
+        if policy_chosen_logps.shape[0] != 0:
             chosen_losses = self.config.loss.desirable_weight * (1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - KL)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
         
         if policy_rejected_logps.shape[0] != 0:
-            rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
             rejected_losses = self.config.loss.undesirable_weight * (1 - F.sigmoid(self.config.loss.beta * (KL - rejected_rewards)))
         else:
             # important to cast to policy_dtype; otherwise error will occur during all_gather
             rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
 
         losses = torch.cat((chosen_losses, rejected_losses), 0)
 
-        return losses, chosen_rewards.detach(), rejected_rewards.detach(), KL.detach()
+        return losses, chosen_rewards.detach(), rejected_rewards.detach(), KL.detach(), chosen_unclamped, rejected_unclamped
     
     def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
         """Run the given model on the given batch of inputs.
@@ -786,12 +962,12 @@ class KTOTrainer(UnpairedPreferenceTrainer):
     def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
         """Compute the loss and other metrics for the given batch of inputs."""
         metrics = {}
-
+        
         policy_chosen_logps, policy_rejected_logps, policy_KL_logps = self.forward(self.policy, batch)
-        with torch.no_grad():
+        with torch.no_grad():    
             reference_chosen_logps, reference_rejected_logps, reference_KL_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
         
-        losses, chosen_rewards, rejected_rewards, KL = self.loss(
+        losses, chosen_rewards, rejected_rewards, KL, chosen_unclamped, rejected_unclamped = self.loss(
             batch,
             policy_chosen_logps,
             policy_rejected_logps,
@@ -804,66 +980,127 @@ class KTOTrainer(UnpairedPreferenceTrainer):
         combined_rewards = torch.cat((chosen_rewards.detach(), rejected_rewards.detach()), 0)
         combined_statuses = torch.Tensor([1] * len(chosen_rewards) + [0] * len(rejected_rewards)).to(self.accelerator.device)
 
-        all_rewards = self.accelerator.gather(combined_rewards)
-        all_statuses = self.accelerator.gather(combined_statuses)
-        all_KL = self.accelerator.gather(KL)
-        chosen_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 1 ]
-        rejected_rewards_idx = [ i for i in range(len(all_statuses)) if all_statuses[i].item() == 0 ]
+        stats = self.accelerator.gather({
+            'rewards': combined_rewards,
+            'statuses': combined_statuses,
+            'KL': KL,
+            'losses': losses.detach(),
+        })
+
+        all_rewards = stats['rewards']
+        chosen_rewards_idx = [ i for i in range(len(stats['statuses'])) if stats['statuses'][i].item() == 1 ]
+        rejected_rewards_idx = [ i for i in range(len(stats['statuses'])) if stats['statuses'][i].item() == 0 ]
 
         metrics[f'rewards_{mode}/chosen'] = all_rewards[chosen_rewards_idx]
         metrics[f'rewards_{mode}/rejected'] = all_rewards[rejected_rewards_idx]
         metrics[f'rewards_{mode}/margins'] = torch.Tensor([(all_rewards[chosen_rewards_idx].mean().nan_to_num(0) - all_rewards[rejected_rewards_idx].mean().nan_to_num(0)).item()])
-        metrics[f'rewards_{mode}/KL_estimate'] = all_KL
-        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.mean().detach()).mean()
+        metrics[f'rewards_{mode}/KL_estimate'] = stats['KL']
+        metrics[f'loss/{mode}'] = stats['losses'].mean()
+        metrics[f'rewards_{mode}/chosen_unclamped'] = self.accelerator.gather(chosen_unclamped)
+        metrics[f'rewards_{mode}/rejected_unclamped'] = self.accelerator.gather(rejected_unclamped)
 
         del policy_chosen_logps, policy_rejected_logps, policy_KL_logps, reference_chosen_logps, reference_rejected_logps, reference_KL_logps
-        del combined_rewards, combined_statuses, all_rewards, all_statuses, chosen_rewards_idx, rejected_rewards_idx, all_KL
+        del combined_rewards, combined_statuses, all_rewards, chosen_rewards_idx, rejected_rewards_idx
+        delete_dicts(stats)
 
-        return losses.sum(), metrics
+        return losses.mean(), metrics
 
 
-class KTOZeroTrainer(UnpairedPreferenceTrainer):
-    def loss(self,
-        batch: Dict,
-        policy_chosen_logps: torch.FloatTensor,
-        policy_rejected_logps: torch.FloatTensor,
-        reference_chosen_logps: torch.FloatTensor,
-        reference_rejected_logps: torch.FloatTensor,
-        *args
-        ) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
-        """Compute a variant of the Kahneman-Tversky loss where the reference point is 0 instead of the expected reward
-        (i.e., the human reference point remains what it is at initialization, when policy = reference). This should NOT
-        be used for purposes other than to understand the importance of the KL term.
-
-        One can also think of this as a variant of unlikelihood training (Welleck et al., 2023). The purpose of this is to understand 
-        the importance of the KL term in the standard variant of the KTO loss. We do *not* reecommend using this in practice as its
-        performance is usually inferior. For each batch of n/2 chosen examples and n/2 rejected examples (belonging to n different 
-        inputs), calculate the loss as follows.
-
-        If generation y ~ p_chosen, where x' ~ are the examples with rejected generations, we have the 'chosen' loss:
-            L(x, y) := 1 - sigmoid(beta * ([log p_policy(y|x) - log p_reference(y|x)] - 0))
-        If generation y ~ p_rejected, , where x' ~ are the examples with chosen generations, we have the 'rejected' loss:
-            L(x, y) := 1 - sigmoid(beta * (0 - [log p_policy(y|x) - log p_reference(y|x)]))
+class GRPOTrainer(BasicTrainer):
+    def loss(self, batch: Dict, policy_logps: torch.FloatTensor, reference_logps: torch.FloatTensor, advantages: torch.FloatTensor, group_size: torch.FloatTensor):
         """
-        if policy_chosen_logps.shape[0] != 0:
-            chosen_rewards = (policy_chosen_logps.sum(-1) - reference_chosen_logps.sum(-1))
-            chosen_losses = 1 - F.sigmoid(self.config.loss.beta * (chosen_rewards - 0))
-        else:
-            # important to cast to policy_dtype; otherwise error will occur during all_gather
-            chosen_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            chosen_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
+        Compute the GRPO loss.
+
+        Args:
+            policy_logps: log probability of the output under the policy (microbatch_size, sequence_length) 
+            reference_logps: log probability of the output under the reference model (microbatch_size, sequence_length) 
+            advantages: sequence level advantages (microbatch_size,)
+            group_size: number of outputs (in entire batch) belonging to prompt associated with sequence (microbatch_size,)
+
+        Returns:
+            average loss, average KL, average weighted advantage, fraction of tokens that are unclamped by humanline
+        """
+        ratio, unclamped = self.get_ratios(policy_logps, reference_logps)
+        masks = (batch['target_labels'][:, 1:] != -100).clone().to(self.policy_dtype)
+
+        advantages = advantages.unsqueeze(-1)
+        group_size = group_size.unsqueeze(-1)
+
+        weighted_adv = advantages * ratio
+        weighted_adv_clipped =  advantages * ratio.clamp(1 - self.config.loss.epsilon, 1 + self.config.loss.epsilon)
+        per_token_KL = torch.exp(reference_logps - policy_logps) - (reference_logps - policy_logps) - 1
+        per_token_loss = -torch.min(weighted_adv, weighted_adv_clipped) + self.config.loss.beta * per_token_KL
+
+        return masked_mean(per_token_loss, masks), masked_mean(per_token_KL.detach(), masks), masked_mean(weighted_adv.abs().detach(), masks), advantages.abs().mean(), unclamped
+
+    def forward(self, model: nn.Module, batch: Dict[str, Union[List, torch.LongTensor]], use_cache: bool=False) -> Tuple[torch.FloatTensor, torch.FloatTensor, torch.FloatTensor]:
+        """Run the given model on the given batch of inputs.
         
-        if policy_rejected_logps.shape[0] != 0:
-            rejected_rewards = (policy_rejected_logps.sum(-1) - reference_rejected_logps.sum(-1))
-            rejected_losses = 1 - F.sigmoid(self.config.loss.beta * (0 - rejected_rewards))
-        else:
-            # important to cast to policy_dtype; otherwise error will occur during all_gather
-            rejected_losses = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
-            rejected_rewards = torch.Tensor([]).to(self.policy_dtype).to(self.accelerator.device)
+        Args:
+            - model: the model to use for the forward pass
+            - batch: the microbatch (should have the input ids, attention mask, and labels)
+            - use_cache: if true, can get cached logprobs instead
 
-        losses = torch.cat((self.config.loss.desirable_weight * chosen_losses, self.config.loss.undesirable_weight * rejected_losses), 0)
+        Returns:
+            logps: log probabilities of examples
+        """    
+        with self.accelerator.autocast():
+            if use_cache:
+                all_logps = model(batch['target_combined_input_ids']).to(self.policy_dtype).to(self.accelerator.device)
+            else:
+                all_logits = model(
+                    batch['target_combined_input_ids'], 
+                    attention_mask=batch['target_combined_attention_mask'],
+                ).logits.to(self.policy_dtype)
+            
+                all_logps = self.get_batch_logps(all_logits, batch['target_labels'])
 
-        return losses, chosen_rewards, rejected_rewards
+        return all_logps
+    
+    def get_batch_metrics(self, batch: Dict[str, Union[List, torch.LongTensor]], mode: str='train'):
+        """Compute the loss and other metrics for the given batch of inputs."""
+        metrics = {}
+        
+        policy_logps = self.forward(self.policy, batch)
+        with torch.no_grad():    
+            reference_logps = self.forward(self.reference_model, batch, use_cache=self.config.cache_reference_logprobs)
+        
+        prompt_ids = self.accelerator.gather_for_metrics(batch['prompt_id'])
+        scores = self.accelerator.gather_for_metrics(batch['score'])
+        scores_by_prompt_id = defaultdict(list)
+
+        for i in range(len(prompt_ids)):
+            scores_by_prompt_id[prompt_ids[i]].append(scores[i])
+
+        group_size = []
+        advantages = []
+
+        for i, prompt_id in enumerate(batch['prompt_id']):
+            group_size.append(len(scores_by_prompt_id[prompt_id]))
+            advantages.append((batch['score'][i] - np.mean(scores_by_prompt_id[prompt_id])) / (np.std(scores_by_prompt_id[prompt_id]) + 1e-2))
+
+        advantages = torch.Tensor(advantages).to(self.accelerator.device)
+        group_size = torch.Tensor(group_size).to(self.accelerator.device)
+
+        losses, KL, weighted_advantage, mean_advantages, unclamped = self.loss(
+            batch,
+            policy_logps,
+            reference_logps,
+            advantages,
+            group_size
+        )
+
+        metrics[f'rewards_{mode}/groupsize'] = group_size
+        metrics[f'rewards_{mode}/rewards'] = scores
+        metrics[f'rewards_{mode}/unclamped'] = unclamped
+        metrics[f'rewards_{mode}/weighted_advantage'] = self.accelerator.gather(weighted_advantage)
+        metrics[f'rewards_{mode}/advantage'] = self.accelerator.gather(mean_advantages)
+        metrics[f'rewards_{mode}/KL'] = self.accelerator.gather(KL)
+        metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
+        
+        del policy_logps, reference_logps, scores, prompt_ids, advantages, group_size, KL, weighted_advantage
+        
+        return losses.mean(), metrics
 
 
 class PPOTrainer(BasicTrainer):
@@ -981,8 +1218,8 @@ class PPOTrainer(BasicTrainer):
             gae = delta + self.config.loss.gamma * self.config.loss.lam * gae
             advantages_reversed.append(gae)
             
-            discounted_future_rewards_reversed.append(discounted_future_reward)
             discounted_future_reward = rewards[:, t] + self.config.loss.gamma * discounted_future_reward
+            discounted_future_rewards_reversed.append(discounted_future_reward)
 
         advantages = (torch.stack(advantages_reversed[::-1]).transpose(0, 1) * masks)
         returns = (advantages + values).contiguous()
@@ -1010,17 +1247,18 @@ class PPOTrainer(BasicTrainer):
         value_losses = (episode['values'] - batch['discounted_future_rewards'].detach()) ** 2
         critic_loss = 0.5 * masked_mean(value_losses, batch['masks'])
         
-        ratio = torch.exp(episode['logprobs'] - batch['logprobs'])
+        ratio, unclamped = self.get_ratios(episode['logprobs'], batch['logprobs'])
         policy_losses = -batch['advantages'] * ratio
-        policy_losses_clipped = -batch['advantages'] * torch.clamp(ratio, self.config.loss.cliprange, 1 / self.config.loss.cliprange)
+        policy_losses_clipped = -batch['advantages'] * torch.clamp(ratio, 1 - self.config.loss.cliprange, 1 + self.config.loss.cliprange)
         policy_loss = masked_mean(torch.max(policy_losses, policy_losses_clipped), batch['masks'])
 
-        KL_penalty = masked_mean(batch['logprobs'] - episode['logprobs'], batch['masks'])
+        KL_penalty = masked_mean(episode['logprobs'] - batch['logprobs'], batch['masks'])
 
         loss = policy_loss + self.config.loss.critic_coef * critic_loss + self.config.loss.KL_coef * KL_penalty
 
         loss_stats = {
             'loss/total': loss.detach(),
+            'loss/unclamped': unclamped,
             'loss/critic': critic_loss.detach(),
             'loss/policy': policy_loss.detach(),
             'clipfrac/policy': masked_mean(torch.gt(policy_losses_clipped, policy_losses).float(), batch['masks']).detach(),
@@ -1122,29 +1360,21 @@ class PPOTrainer(BasicTrainer):
 
     def train(self):
         """Train with PPO."""
-        self.accelerator.print(f'Using {self.config.optimizer} optimizer with learning rate {self.config.lr}')
-        self.optimizer = getattr(torch.optim, self.config.optimizer)(self.policy.parameters(), lr=self.config.lr)
-        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, lr_lambda=lambda step: min(1.0, (step + 1) / (self.config.warmup_steps + 1)))
-
         self.policy.train()
         self.reference_model.eval()
         
         last_log = None
         batch_metrics = defaultdict(list)
+        accumulated_batches = []
 
-        for batch in self.train_iterator:
-            if self.batch_counter < self.num_skip_batches:
-                self.batch_counter += 1
-                self.example_counter += self.config.model.batch_size
-                continue
-
+        for train_batch in self.train_iterator:
             # EVALUATION
-            if self.example_counter % self.config.eval_every == 0 and (self.example_counter > 0 or self.config.do_first_eval):
+            if accumulated_batches == [] and ((self.example_counter % self.config.eval_every == 0) or (self.example_counter == 0 and self.config.do_first_eval)):
                 results = self.eval()
 
                 if self.example_counter > 0:
                     if self.config.debug:
-                        self.accelerator.print('skipping save in debug mode')
+                        self.accelerator.print('skipping save in debug mode.')
                     elif self.config.intermediate_checkpoints:
                         output_dir = os.path.join(self.run_dir, f'step-{self.example_counter}')
                         self.accelerator.print(f'creating checkpoint to write to {output_dir}...')
@@ -1154,31 +1384,42 @@ class PPOTrainer(BasicTrainer):
                 delete_dicts(results)
 
             # TRAINING
+            accumulated_batches.append(train_batch)
+            if len(accumulated_batches) < self.config.model.gradient_accumulation_steps:
+                continue
+
             start_time = time.time()
 
-            microbatch_size = len(batch['prompt_text'])
-            global_batch_dict = self.get_global_batch_dict(batch)
-
-            for ppo_epoch in range(self.config.loss.ppo_epochs):
-                with self.accelerator.accumulate(self.policy):
+            for _ in range(self.config.loss.ppo_epochs):
+                self.optimizer.zero_grad()
+           
+                for batch_idx, batch in enumerate(accumulated_batches):  
+                    # only synchronize gradients on the last batch to avoid slowdown from unnecessary communication
+                    microbatch_size = len(batch['prompt_text'])
+                    global_batch_dict = self.get_global_batch_dict(batch)
                     loss, local_batch_metrics = self.get_batch_metrics(global_batch_dict, microbatch_size, mode='train')
+                    loss = loss / self.config.model.gradient_accumulation_steps
+                    delete_dicts(batch)
 
                     for k, v in local_batch_metrics.items():
                         batch_metrics[k].extend(v)
 
                     self.accelerator.backward(loss)
-                    v_head_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
-                    pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
-                    batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
-                    self.optimizer.step()
-                    self.scheduler.step()
-                    self.optimizer.zero_grad()
-
+                    
+                pretrained_norm = self.accelerator.clip_grad_norm_(self.policy.pretrained_model.parameters(), self.config.model.max_grad_norm)
+                v_head_norm = self.accelerator.clip_grad_norm_(self.policy.v_head.parameters(), self.config.model.v_head_max_grad_norm)
+                batch_metrics['grad_norm'].extend(torch.as_tensor(v_head_norm + pretrained_norm).reshape(-1).float().cpu().numpy().tolist())
+                
+                self.optimizer.step()
+                if self.config.loss.sync_reference or self.config.humanline:
+                    self.sync_reference_with_policy()
+            
+            self.scheduler.step()
             self.batch_counter += 1
-            self.example_counter += microbatch_size * self.accelerator.num_processes
+            self.example_counter += self.config.model.batch_size
 
             step_time = time.time() - start_time
-            examples_per_second = (microbatch_size * self.accelerator.num_processes) / step_time
+            examples_per_second = self.config.model.batch_size / step_time
             batch_metrics['examples_per_second'].append(examples_per_second)
 
             delete_dicts(global_batch_dict, batch, local_batch_metrics)
@@ -1202,6 +1443,9 @@ class PPOTrainer(BasicTrainer):
                 batch_metrics = defaultdict(list)    
             else:
                 self.accelerator.print(f'skipping logging after {self.example_counter} examples to avoid logging too frequently')
+
+            accumulated_batches = []
+            self.free_memory()
 
     def get_batch_metrics(self, global_batch_dict: Dict, microbatch_size: int=0, mode:str='train'):
         """
@@ -1290,8 +1534,7 @@ class PPOTrainer(BasicTrainer):
             
         self.accelerator.wait_for_everyone()
 
-        unwrapped_v_head = self.accelerator.unwrap_model(self.policy.v_head)
-        torch.save(unwrapped_v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))
+        self.accelerator.save(self.policy.v_head.state_dict(), os.path.join(output_dir, "v_head.pt"))
         self.accelerator.wait_for_everyone()
 
 
@@ -1385,5 +1628,4 @@ class BradleyTerryTrainer(PairedPreferenceTrainer):
         metrics[f'rewards_{mode}/margins'] = self.accelerator.gather((chosen_rewards - rejected_rewards).detach())
         metrics[f'loss/{mode}'] = self.accelerator.gather(losses.detach()).mean()
 
-        return losses.sum(), metrics
-        
+        return losses.mean(), metrics

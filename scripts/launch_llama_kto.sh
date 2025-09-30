@@ -64,7 +64,7 @@ accelerate launch \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    launch.py loss=kto model=llama datasets=[ultrabin] exp_name=llama3-8B-kto-${BETA}-${LR} \
+    launch.py loss=kto model=llama train_datasets=[ultrabin] test_datasets=[ultrabin] exp_name=llama3-8B-kto-${BETA}-${LR} \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++lr=${LR} \

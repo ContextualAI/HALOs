@@ -35,7 +35,7 @@ init_env() {
 
     # Activate your conda environment
     source $(conda info --base)/etc/profile.d/conda.sh
-    conda activate halos_6
+    conda activate halos
 
     echo "Running on node: $(hostname)"
     echo "Machine Rank: $SLURM_PROCID"
@@ -64,7 +64,7 @@ accelerate launch \
     --machine_rank \$SLURM_PROCID \
     --main_process_ip \$MASTER_ADDR \
     --main_process_port \$MASTER_PORT \
-    launch.py loss=sft model=llama datasets=[ultrabin] exp_name=llama3-8B-sft \
+    launch.py loss=sft model=llama train_datasets=[ultrabin] test_datasets=[ultrabin] exp_name=llama3-8B-sft \
     ++cache_dir=/scratch/gpfs/ke7953/models \
     ++model.name_or_path=\$MODEL_PATH \
     ++model.use_peft=false ++cache_reference_logprobs=false ++lr=1e-6

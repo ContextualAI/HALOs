@@ -5,7 +5,8 @@ seed: 1
 exp_name: ???
 
 # datasets should be specified as a list (e.g., ++datasets=[shp,hh])
-datasets: ???
+train_datasets: ???
+test_datasets: ???
 
 # debug mode (disables wandb, model checkpointing, etc.)
 debug: false
@@ -40,6 +41,8 @@ defaults:
 # the trainer class to use (e.g. BasicTrainer, FSDPTrainer, TensorParallelTrainer); should be specfied by the loss config
 trainer: BasicTrainer
 
+template_tokens: []
+
 
 ## TRAINING SETTINGS
 
@@ -58,11 +61,29 @@ n_eval_examples: 256
 # evaluate and save model every eval_every steps
 eval_every: 1024
 
+# save model every save_every steps (in case it's different from eval_every)
+save_every: 5120
+
+# whether to only step scheduler once across all processes; see  https://github.com/huggingface/accelerate/issues/2142
+step_scheduler_with_optimizer: false
+
 # the optimizer to use; should be one of the options listed here: https://pytorch.org/docs/stable/optim.html
 optimizer: AdamW
 
-# number of linear warmup steps for the learning rate
-warmup_steps: 150
+# the weight decay for the optimizer
+weight_decay: 0.01
+
+# beta1 for AdamW
+beta1: 0.9
+
+# beta2 for AdamW
+beta2: 0.999
+
+# epsilon for AdamW
+eps: 1e-5
+
+# fraction of training spent in warmup
+warmup: 0.10
 
 # cache log probabilities of reference model
 cache_reference_logprobs: false
@@ -70,11 +91,18 @@ cache_reference_logprobs: false
 # path to pickle file of previously cached log probabilities of reference model
 load_reference_logprobs: null
 
+# humanline alignment (from prospect theory)
+humanline: false
+log_epsilon_P: -1.0
+log_epsilon_R: 1.5
+
+# online training
+online: false
 
 ## DATALOADER SETTINGS
 
 # what fraction of undesirable data should be kept
-# e.g., if this is 0.8, then a randoom 20% of the undesirable examples (x, y_undesirable) should be thrown away
+# e.g., if this is 0.8, then a random 20% of the undesirable examples (x, y_undesirable) should be thrown away
 # this is to study the effect of an imbalanced dataset while only working with data that comes in paired preference form
 frac_unique_desirable: 1.0
 

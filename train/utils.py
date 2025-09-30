@@ -7,14 +7,42 @@ import os
 from datetime import datetime
 import torch
 import torch.distributed as dist
-import os
 import json
+import openai
+import asyncio
 from typing import Dict, Union, Type, List, TextIO
-from collections.abc import Mapping
 
 import huggingface_hub
 from huggingface_hub import HfApi, HfFolder
-from huggingface_hub.utils import LocalTokenNotFoundError
+
+
+async def get_api_completion(
+    client: openai.AsyncOpenAI,
+    system_prompt: str,
+    user_prompt: str,
+    model: str,
+    temperature: float = 0.0,
+    max_retries: int = 3,
+    retry_delay: float = 1.0
+) -> float:
+    """Get completion from API with retry logic."""
+    for attempt in range(max_retries):
+        try:
+            response = await client.chat.completions.create(
+                model=model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ],
+                temperature=temperature
+            )
+            
+            return response.choices[0].message.content.strip()
+        except Exception as e:
+            if attempt == max_retries - 1:
+                print(f"Error after {max_retries} attempts: {e}")
+                return 0.0
+            await asyncio.sleep(retry_delay * (2 ** attempt))  # Exponential backoff
 
 
 class StreamingJSONWriter:

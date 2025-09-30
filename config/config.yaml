@@ -93,6 +93,7 @@ load_reference_logprobs: null
 
 # humanline alignment (from prospect theory)
 humanline: false
+sync_freq: 1
 log_epsilon_P: -1.0
 log_epsilon_R: 1.5
 

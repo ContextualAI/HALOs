@@ -453,9 +453,10 @@ class BasicTrainer(object):
         """
         Update the reference model to have the policy weights.
         """
-        state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
-        self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
-        self.accelerator.wait_for_everyone()
+        if self.batch_counter % self.config.sync_freq == 0:
+            state_dict = self.accelerator.unwrap_model(self.policy).state_dict()
+            self.accelerator.unwrap_model(self.reference_model).load_state_dict(state_dict)
+            self.accelerator.wait_for_everyone()
 
     def sample(self, model, batch: Dict[str, Union[List, torch.LongTensor]], temp: float=0.7) -> str:
         """

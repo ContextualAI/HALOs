@@ -139,13 +139,9 @@ def get_alpacaeval(split: str) -> Dataset:
     Returns:   
         A Dataset instance.
     """
-    if split == 'test':
-        split = 'eval'
-    else:
-        raise ValueError('alpacaeval is only for evaluation')
-
+    split = 'train' # only one split
     rank0_print(f'Loading AlpacaEval dataset ({split} split) from Huggingface...')
-    dataset = datasets.load_dataset('tatsu-lab/alpaca_eval', split=split)
+    dataset = datasets.load_dataset('jacobmorrison/alpacaeval', split=split)
     if on_rank0():
         dataset = tqdm.tqdm(dataset, desc='Processing AlpacaEval')
 
